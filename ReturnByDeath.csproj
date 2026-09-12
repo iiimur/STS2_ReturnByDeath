@@ -1,0 +1,77 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- 本项目是纯 DLL mod，不需要 Godot.NET.Sdk 或 PCK 导出。 -->
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <AssemblyName>ReturnByDeath</AssemblyName>
+    <RootNamespace>ReturnByDeath</RootNamespace>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <DebugType>none</DebugType>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- 防止历史构建产物被 SDK 当作源码再次编译。 -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj/**;bin/**</DefaultItemExcludes>
+    <!--
+      源码项目现在位于桌面；这里指向游戏的 MacOS 目录。
+      如果将来移动游戏或源码目录，只需修改 Sts2Dir，不要改下面的引用结构。
+    -->
+    <Sts2Dir>/Users/murmur/Library/Application Support/Steam/steamapps/common/Slay the Spire 2/SlayTheSpire2.app/Contents/MacOS</Sts2Dir>
+    <Sts2DataDir>$(Sts2Dir)/../Resources/data_sts2_macos_arm64</Sts2DataDir>
+    <Sts2ModsDir>$(Sts2Dir)/mods/ReturnByDeath</Sts2ModsDir>
+    <!-- 默认保持原工作流；并行会话可传 -p:InstallToGame=false，避免互相覆盖游戏 DLL。 -->
+    <InstallToGame Condition="'$(InstallToGame)' == ''">true</InstallToGame>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="sts2">
+      <HintPath>$(Sts2DataDir)/sts2.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(Sts2DataDir)/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GodotSharp">
+      <HintPath>$(Sts2DataDir)/GodotSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!--
+    教程中的“自动复制 dll 和 json”。这里额外复制音频和视频，
+    并保留 Resource 下的目录层级，运行时由 DLL 按分类路径读取。
+    不复制 sts2.dll、0Harmony.dll，也不复制 bin/obj 或运行时存档。
+  -->
+  <ItemGroup>
+    <ModStaticFiles Include="ReturnByDeath.json" />
+    <ModAudioFiles Include="Resource/音效/**/*" Exclude="Resource/音效/**/*.DS_Store" />
+    <ModVideoFiles Include="Resource/视频/**/*.ogv" Exclude="Resource/视频/**/*.DS_Store" />
+    <ModStaticFiles Include="Resource/图片/选项按钮贴图/*.png" />
+    <ModStaticFiles Include="Resource/图片/怠惰结局触发.png" />
+    <!-- 怠惰 IF 线进入时显示的羽化结局图。DLL 从 mod 根目录读取它。 -->
+    <ModStaticFiles Include="Resource/图片/怠惰结局触发-羽化.png" />
+    <!-- 莱茵哈鲁特被非正常删牌时显示的傲慢结局图。DLL 从 mod 根目录读取它。 -->
+    <ModStaticFiles Include="Resource/图片/傲慢结局触发-羽化.png" />
+    <ModStaticFiles Include="Resource/图片/cutin-1.png" />
+    <ModStaticFiles Include="Resource/图片/cutin-2.png" />
+    <ModStaticFiles Include="Resource/图片/cutin-3.png" />
+    <ModStaticFiles Include="Resource/图片/glass-1.png" />
+    <ModStaticFiles Include="Resource/图片/glass-2.png" />
+    <ModStaticFiles Include="Resource/图片/glass-3.png" />
+    <ModStaticFiles Include="Resource/图片/傲慢结局-爱蜜莉雅.png" />
+    <!-- 每层第一次死亡回归后，层首报幕替换显示的 Re0 标题图。DLL 从 mod 根目录读取它。 -->
+    <ModStaticFiles Include="Resource/图片/Re0标题图.png" />
+  </ItemGroup>
+
+  <Target Name="CopyModToGame" AfterTargets="Build" Condition="'$(InstallToGame)' == 'true'">
+    <Message Text="Copying ReturnByDeath runtime files to $(Sts2ModsDir)..." Importance="high" />
+    <MakeDir Directories="$(Sts2ModsDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(Sts2ModsDir)" />
+    <Copy SourceFiles="@(ModStaticFiles)" DestinationFolder="$(Sts2ModsDir)" />
+    <Copy SourceFiles="@(ModAudioFiles)"
+          DestinationFiles="@(ModAudioFiles->'$(Sts2ModsDir)/音效/%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Copy SourceFiles="@(ModVideoFiles)"
+          DestinationFiles="@(ModVideoFiles->'$(Sts2ModsDir)/视频/%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+</Project>

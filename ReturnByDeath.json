@@ -1,0 +1,13 @@
+{
+  "id": "ReturnByDeath",
+  "pck_name": "ReturnByDeath",
+  "name": "假如我能死亡回归",
+  "version": "1.0.8",
+  "author": "mur123",
+  "description": "如题，能死亡回归，机制正在平衡中，美术正在优化中",
+  "dependencies": [],
+  "has_pck": false,
+  "has_dll": true,
+  "affects_gameplay": true,
+  "min_game_version": "v0.111.0"
+}
