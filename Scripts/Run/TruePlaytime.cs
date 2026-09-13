@@ -96,6 +96,7 @@ internal static class TruePlaytimeDisplayPatch
         try
         {
             ProxyModeToggle.Ensure(__instance);
+            CurseBudgetDisplay.Ensure(__instance);
             var runManager = RunManager.Instance;
             if (runManager is null || runManager.IsGameOver)
                 return;

@@ -207,11 +207,41 @@ internal static class AmnesiaState
             segment.AddRange(checkpointEntries);
 
             var prefix = Math.Min(checkpointEntries.Count, deathEntries.Count);
-            segment.AddRange(deathEntries.Skip(prefix));
+            var appended = deathEntries.Skip(prefix).ToList();
+            // 回归落地时原版 LoadRun 会为存档点所在房间再追加一条历史条目，
+            // 其后所有条目相对真实地图坐标行整体后移一位。落地条目与存档点
+            // 最后一个节点是同一房间（内容一致），检测到就跳过，保持层内
+            // 下标与坐标行对齐——遭遇预告的地图联动依赖这一点。
+            if (checkpointEntries.Count > 0 && appended.Count > 0 &&
+                IsSameRoomContent(checkpointEntries[^1], appended[0]))
+                appended.RemoveAt(0);
+            segment.AddRange(appended);
             result.Add(segment);
         }
 
         return result;
+    }
+
+    // 比较两条历史条目是否为同一房间：地图点类型与全部房间内容一致。
+    private static bool IsSameRoomContent(MapPointHistoryEntry a, MapPointHistoryEntry b)
+    {
+        if (a.MapPointType != b.MapPointType || a.Rooms.Count != b.Rooms.Count)
+            return false;
+
+        for (var i = 0; i < a.Rooms.Count; i++)
+        {
+            var ra = a.Rooms[i];
+            var rb = b.Rooms[i];
+            if (ra.RoomType != rb.RoomType ||
+                !string.Equals(ra.ModelId?.ToString(), rb.ModelId?.ToString(), StringComparison.Ordinal) ||
+                ra.MonsterIds.Count != rb.MonsterIds.Count)
+                return false;
+            for (var m = 0; m < ra.MonsterIds.Count; m++)
+                if (!string.Equals(ra.MonsterIds[m].ToString(), rb.MonsterIds[m].ToString(), StringComparison.Ordinal))
+                    return false;
+        }
+
+        return true;
     }
 
     public static int GetEpisodeCount()

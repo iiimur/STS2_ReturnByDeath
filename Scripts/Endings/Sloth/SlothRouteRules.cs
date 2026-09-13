@@ -160,6 +160,10 @@ internal static class SlothFullMapTravelPatch
 
 // Boss 与第二 Boss 是地图屏幕中的独立节点，不能通过上面的普通点结果
 // 参与原版字典遍历；单独把它们标为可旅行即可保留“从任意楼层直达 Boss”。
+// 另外原版 RecalculateTravelability 有个短路：当前位于最后一行时直接只标
+// Boss 并 return，不调用 GetTravelablePointsFrom（全图补丁因此失效，表现
+// 为最后一层火堆之后只能打 Boss）。这里在怠惰线下把全部普通点重新标为
+// 可旅行，恢复全图旅行。
 [HarmonyPatch(typeof(NMapScreen), "RecalculateTravelability")]
 internal static class SlothBossTravelabilityPatch
 {
@@ -168,6 +172,16 @@ internal static class SlothBossTravelabilityPatch
     {
         if (!RouteState.IsSlothRoute || !GodotObject.IsInstanceValid(__instance))
             return;
+
+        if (AccessTools.Field(typeof(NMapScreen), "_mapPointDictionary")?.GetValue(__instance)
+            is Dictionary<MapCoord, NMapPoint> mapPoints)
+        {
+            foreach (var node in mapPoints.Values)
+            {
+                if (GodotObject.IsInstanceValid(node) && node.State == MapPointState.Untravelable)
+                    node.State = MapPointState.Travelable;
+            }
+        }
 
         SetSpecialPointTravelable(__instance, "_bossPointNode");
         SetSpecialPointTravelable(__instance, "_secondBossPointNode");

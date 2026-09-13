@@ -71,6 +71,10 @@ internal static class AbandonRunVideo
         if (!state.Players.Any(HasEnoughGuilty))
             return false;
 
+        // 奥托事件新增前提：必须持有“过去的苦痛”（艾姬多娜第一次试验的遗物）。
+        if (!state.Players.Any(player => player.Relics.Any(relic => relic is PainOfThePast)))
+            return false;
+
         if (!CheckpointStore.TryLoad(out checkpoint))
         {
             ModLog.Write("Abandon video skipped because no recovery checkpoint was available.");

@@ -180,6 +180,13 @@ internal static class GameOverMusicPatch
             return true;
         }
 
+        // 「强欲」IF 线：死亡保持安静——既不播放惨叫，也不播放原生 game-over 音效。
+        if (GreedRoute.IsActive)
+        {
+            ModLog.Write("Suppressed death audio in the Greed IF route.");
+            return false;
+        }
+
         ModLog.Write($"Intercepted game-over music: {TargetPath}");
         if (CosmeticAudio.TryPlayRandomDeathScream())
         {

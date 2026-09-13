@@ -33,7 +33,6 @@ internal static class AmnesiaMemoryPanel
     private static NTopBarPortrait? _portrait;
     private static Control? _panelRoot;
     private static NRunHistory? _historyView;
-    private static Label? _episodeLabel;
     private static int _episodeIndex;
     private static int _open;
 
@@ -141,18 +140,6 @@ internal static class AmnesiaMemoryPanel
             // 左右切换箭头保留：由 UpdateEpisodeNavigation 启用并接管切换记忆。
             RemoveUnusedControls(runHistoryView);
 
-            // 顶部中间只放一个记忆序号提示；切换本身用原版左右箭头。
-            var viewportSize = _panelRoot.GetViewportRect().Size;
-            _episodeLabel = new Label
-            {
-                Position = new Vector2(viewportSize.X / 2f - 110f, 42f),
-                Size = new Vector2(220f, 32f),
-                ZIndex = 1000,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                MouseFilter = Control.MouseFilterEnum.Ignore
-            };
-            _panelRoot.AddChild(_episodeLabel);
-
             // 先强制创建检视屏幕；若本局之前已创建过（点过任何卡牌），它排在
             // 面板之前，必须 MoveToFront 提到最上层，否则详情会被面板盖住。
             NGame.Instance.GetInspectCardScreen();
@@ -258,14 +245,9 @@ internal static class AmnesiaMemoryPanel
     // AmnesiaMemoryPrevious/NextArrowPatch 接管为切换记忆。
     private static void UpdateEpisodeNavigation(int? countOverride = null)
     {
-        var count = countOverride ?? AmnesiaState.GetEpisodeCount();
-        if (_episodeLabel is not null && GodotObject.IsInstanceValid(_episodeLabel))
-            _episodeLabel.Text = count > 0
-                ? $"死亡记录 {_episodeIndex + 1} / {count}"
-                : "暂无死亡记录";
-
         if (_historyView is null || !GodotObject.IsInstanceValid(_historyView))
             return;
+        var count = countOverride ?? AmnesiaState.GetEpisodeCount();
         // 与原版 RefreshAndSelectRun 的箭头行为一致：没有可切换的方向时
         // 直接隐藏箭头，而不是留在原地变灰。
         var prev = _historyView.GetNodeOrNull<NRunHistoryArrowButton>("LeftArrow");
@@ -302,7 +284,6 @@ internal static class AmnesiaMemoryPanel
         _panelRoot = null;
         Volatile.Write(ref _open, 0);
         _historyView = null;
-        _episodeLabel = null;
         _episodeIndex = 0;
         _ = TearDownNextFrameAsync(panelRoot);
     }
@@ -357,13 +338,24 @@ internal static class AmnesiaMemoryPanel
     // 点击任意非交互区域（背景、遮罩）关闭面板：从点击命中的控件向上找，
     // 命中链上存在可交互控件（NClickableControl：按钮、卡牌条目、地图条目等）
     // 就不关闭；落在背景/空白处则关闭面板并消费这次点击。
+    // 空白点击关闭：空白 = 屏幕上除按钮外的任意位置。从命中控件沿父链向上
+    // 找，遇到按钮（原版 NButton 体系或 Godot Button）就交给按钮处理；没遇到
+    // 就视为空白——无论命中链是否回到面板根（面板背景、遮罩、历史页空白、
+    // 甚至面板矩形之外的角落）都关闭面板。之前用“链上出现可交互控件就不关”
+    // 的判定过于宽泛，历史页里大量节点都是 NClickableControl，导致永远关不掉。
+    // 空白点击关闭：空白 = 面板范围内除面板自有按钮（左右切换箭头）外的
+    // 任意位置。判定时沿点击命中控件向上走到面板根为止——命中链里出现
+    // 面板按钮就交给按钮；没出现就关闭。命中链没经过面板根说明点的是
+    // 面板之外的其他 UI（如确认弹窗的按钮），不干预。
+    // 之前两个版本失败的共性原因：命中链没有限制在面板范围内，游戏主 UI
+    // 里位于面板之上的按钮会让所有点击都被误判为“点了按钮”。
     private sealed class ClickCloseNode : Node
     {
         private readonly Control _panelRoot;
 
-        public event Action? CloseRequested;
-
         public ClickCloseNode(Control panelRoot) => _panelRoot = panelRoot;
+
+        public event Action? CloseRequested;
 
         public override void _Input(InputEvent inputEvent)
         {
@@ -371,20 +363,22 @@ internal static class AmnesiaMemoryPanel
                 return;
 
             var viewport = GetViewport();
-            var hovered = viewport.GuiGetHoveredControl();
-            for (Node? node = hovered; node is not null; node = node.GetParent())
+            var overPanel = false;
+            for (Node? node = viewport.GuiGetHoveredControl(); node is not null; node = node.GetParent())
             {
                 if (node == _panelRoot)
                 {
-                    viewport?.SetInputAsHandled();
-                    CloseRequested?.Invoke();
-                    return;
+                    overPanel = true;
+                    break;
                 }
-
-                if (node is MegaCrit.Sts2.Core.Nodes.GodotExtensions.NClickableControl ||
-                    node is Button)
+                if (node is NRunHistoryArrowButton)
                     return;
             }
+
+            if (!overPanel)
+                return;
+            viewport?.SetInputAsHandled();
+            CloseRequested?.Invoke();
         }
     }
 

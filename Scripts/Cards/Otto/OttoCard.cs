@@ -8,7 +8,7 @@ namespace ReturnByDeath;
 /// </summary>
 public sealed class OttoCard : CardModel
 {
-    public OttoCard() : base(0, CardType.Skill, CardRarity.Rare, TargetType.AnyEnemy, false) { }
+    public OttoCard() : base(0, CardType.Skill, CardRarity.Rare, TargetType.AllEnemies, false) { }
 
     public override IEnumerable<CardKeyword> CanonicalKeywords =>
         IsUpgraded
@@ -17,10 +17,17 @@ public sealed class OttoCard : CardModel
 
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
-        if (cardPlay.Target is { } target && target.IsAlive)
+        // 本回合获得6力量：复用原版 Flex 药水的临时力量能力（回合结束自动移除）。
+        if (Owner?.Creature is { } owner)
+            await PowerCmd.Apply<FlexPotionPower>(choiceContext, owner, 6m, owner, null);
+
+        // 击晕所有敌人。
+        var enemies = CombatState?.Enemies.Where(enemy => enemy.IsAlive).ToList()
+            ?? new List<Creature>();
+        foreach (var enemy in enemies)
         {
-            await CreatureCmd.TriggerAnim(target, "Hit", 0f);
-            await CreatureCmd.Stun(target);
+            await CreatureCmd.TriggerAnim(enemy, "Hit", 0f);
+            await CreatureCmd.Stun(enemy);
         }
     }
 
@@ -72,6 +79,18 @@ internal static class OttoCardLifecycle
     {
         if (!OttoAcceptanceState.IsPending ||
             player.PlayerCombatState is null ||
+            player.PlayerCombatState.TurnNumber != 1 ||
+            HasOttoInCombat(player))
+            return false;
+
+        return Interlocked.CompareExchange(ref _addedThisCombat, 1, 0) == 0;
+    }
+
+    // 奥托的契约遗物的注入条件：与接受奥托共用每场战斗一次的计数，
+    // 两条路径同时存在时合计只会加入一张奥托。
+    public static bool ShouldAddForRelic(Player player)
+    {
+        if (player.PlayerCombatState is null ||
             player.PlayerCombatState.TurnNumber != 1 ||
             HasOttoInCombat(player))
             return false;
@@ -221,8 +240,8 @@ internal static class OttoDescriptionRenderPatch
             return;
 
         __result = __instance.IsUpgraded
-            ? "保留。击晕该敌人。消耗。"
-            : "击晕该敌人。消耗。";
+            ? "保留。本回合获得6力量，击晕所有敌人。消耗。"
+            : "本回合获得6力量，击晕所有敌人。消耗。";
     }
 }
 

@@ -82,6 +82,18 @@ internal static class SlothCombatSettlement
                 $"hp={before}->{player.Creature.CurrentHp}/{player.Creature.MaxHp}.");
         }
 
+        // 原版战斗结束（CombatManager.EndCombatInternal）会触发
+        // Hook.AfterCombatEnd，愧疚等按场次结算的卡牌在这里推进计数（满 5 场
+        // 自动移出牌组）。代理结算跳过了真实战斗，不会走到原版结束链，这里
+        // 手动补发同一钩子，保持“代理一场 = 实际打完一场”的语义。死亡时仍
+        // 走原生死亡回归流程，不计入（与真实战斗死亡一致）。
+        var combatState = room.CombatState;
+        if (combatState is not null)
+        {
+            await MegaCrit.Sts2.Core.Hooks.Hook.AfterCombatEnd(
+                combatState.RunState, combatState, room);
+        }
+
         // 代理路径在原生 StartCombat 之后接管：此时怪物已经生成、ActiveCombat
         // 房间已经创建。不能直接调用原生 StartPreFinishedCombat——它第一步固定
         // 调用 GenerateMonstersWithSlots，对已生成的遭遇会抛 InvalidOperationException，

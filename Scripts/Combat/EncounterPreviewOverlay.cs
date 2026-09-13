@@ -36,17 +36,21 @@ internal static class EncounterJournalPatch
 // 与记忆面板同一套 UI），从记忆面板的横向排列改为在预告位置纵向排列。
 // 数据源是记忆面板的记忆：每条记忆是一次完整的生命结算记录（出生→存档点
 // →死亡），悬浮即可看到结算生命、金币、敌人、失去的生命、回合、获得/跳过
-// 的奖励等原生内容。所有记忆按（层, 房间身份, 本局第几次出现）合并，同一
-// 事件或遭遇即使在新时间线中的位置发生变化，也由较新的记录覆盖。分组四行：
-// 普通怪物、精英怪物、问号、商店；问号房打出的战斗同时留在对应怪物分组。
+// 的奖励等原生内容。合并按（层, 类别, 类别内序号）进行：战斗的出现顺序与
+// 问号的类型顺序各自固定（每进一个同类房间消耗序列下一项），同序号冲突时
+// 保留较新记忆（“最新”原则）；路线只影响战斗与问号的交错方式，因此联动
+// 不用到访顺序，改由悬浮时按当前真实进度现算序号。分四组展示（普通怪物、
+// 精英怪物、问号、商店），组标题不再显示以留出横向空间；问号房打出的战斗
+// 同时留在对应怪物分组。
 internal static class EncounterPreviewOverlay
 {
     private static VBoxContainer? _container;
 
-    // 预告行（NActHistoryEntry 里的每个 NMapPointHistoryEntry）按地图坐标
-    // （层, 到访行）登记，供地图节点悬浮联动。
-    private static readonly Dictionary<(int Act, int Row), NMapPointHistoryEntry> PreviewRowsByCoord =
-        new();
+    // 预告行（NActHistoryEntry 里的每个 NMapPointHistoryEntry）按
+    // （层, 类别, 类别内序号）登记，供地图节点悬浮联动。同一序号可能对应
+    // 多行——问号房打出的战斗同时出现在问号与怪物分组；悬浮时一并高亮。
+    private static readonly Dictionary<(int Act, string Category, int SeqIdx), List<NMapPointHistoryEntry>>
+        PreviewRowsBySequence = new();
 
     private const string MapNodeHoverHookedMeta = "ReturnByDeathPreviewHoverHooked";
 
@@ -55,7 +59,7 @@ internal static class EncounterPreviewOverlay
         if (_container is null || !GodotObject.IsInstanceValid(_container))
             return;
         _container.Visible = false;
-        PreviewRowsByCoord.Clear();
+        PreviewRowsBySequence.Clear();
         foreach (var child in _container.GetChildren().ToArray())
             child.QueueFree();
     }
@@ -81,34 +85,34 @@ internal static class EncounterPreviewOverlay
         if (_container is null) return;
         foreach (var child in _container.GetChildren().ToArray())
             child.QueueFree();
-        PreviewRowsByCoord.Clear();
+        PreviewRowsBySequence.Clear();
 
         var memories = BuildMergedMemories();
         var act = state.CurrentActIndex;
-        CreateCategory("preview-normal-title",
-            SelectEntries(memories, act, IsNormalEntry), state, livePlayer);
-        CreateCategory("preview-elite-title",
-            SelectEntries(memories, act, IsEliteEntry), state, livePlayer);
-        CreateCategory("preview-unknown-title",
-            SelectEntries(memories, act, IsUnknownEntry), state, livePlayer);
-        CreateCategory("preview-shop-title",
-            SelectEntries(memories, act, IsShopEntry), state, livePlayer);
+        CreateCategory(SelectEntries(memories, act, CategoryNormal), state, livePlayer);
+        CreateCategory(SelectEntries(memories, act, CategoryElite), state, livePlayer);
+        CreateCategory(SelectEntries(memories, act, CategoryUnknown), state, livePlayer);
+        CreateCategory(SelectEntries(memories, act, CategoryShop), state, livePlayer);
         _container.Visible = true;
-        ModLog.Write($"Encounter journal shown after identity merge: act={act}, entries={memories.Count}.");
+        ModLog.Write($"Encounter journal shown after sequence merge: act={act}, entries={memories.Count}.");
     }
 
     private static void CreateCategory(
-        string titleKey, List<MergedMemoryEntry> entries, RunState state, Player livePlayer)
+        List<MergedMemoryEntry> entries, RunState state, Player livePlayer)
     {
         if (_container is null || entries.Count == 0)
             return;
 
         var history = BuildPreviewHistory(
             entries.Select(memory => memory.Entry).ToList(), state, livePlayer);
+        // 分组标题不再显示：照常传入标题 LocString（走原版创建流程），
+        // 创建后隐藏标题标签——HBox 布局里标题列随之塌缩，条目整体左移。
         var actEntry = NActHistoryEntry.Create(
-            new LocString("return-by-death", titleKey), history, history.MapPointHistory[0], 1);
+            new LocString("return-by-death", "preview-normal-title"),
+            history, history.MapPointHistory[0], 1);
         if (actEntry is null)
             return;
+        actEntry.GetNodeOrNull<Control>("%Title")?.Visible = false;
         _container.AddChild(actEntry);
         actEntry.SetPlayer(new RunHistoryPlayer
         {
@@ -116,73 +120,77 @@ internal static class EncounterPreviewOverlay
             Character = livePlayer.Character.Id
         });
 
-        // 行序与条目序一致：登记每行对应的地图坐标（层, 到访行），
-        // 供地图节点悬浮 → 预告行高亮的联动使用。
+        // 行序与条目序一致：登记每行对应的（层, 类别, 类别内序号），
+        // 供地图节点悬浮 → 预告行高亮的联动使用。同一序号在多个分组各有
+        // 一行时全部登记，悬浮地图节点时一并高亮。
         var rows = actEntry.Entries;
         for (var i = 0; i < rows.Count && i < entries.Count; i++)
-            PreviewRowsByCoord[(entries[i].Act, entries[i].Row)] = rows[i];
+        {
+            var key = (entries[i].Act, entries[i].Category, entries[i].SeqIdx);
+            if (!PreviewRowsBySequence.TryGetValue(key, out var bucket))
+            {
+                bucket = new List<NMapPointHistoryEntry>();
+                PreviewRowsBySequence[key] = bucket;
+            }
+            bucket.Add(rows[i]);
+        }
     }
 
     private sealed class MergedMemoryEntry
     {
         public int Act { get; init; }
-        public int Order { get; init; }
-        // 该条目在记忆历史层列表中的下标。原生历史按到访顺序追加且以坐标
-        // row 为下标（与原版 GetHistoryEntryFor 一致），因此它就是地图坐标
-        // 的行号，用于地图节点悬浮 → 预告行高亮的联动。
-        public int Row { get; init; }
+        public string Category { get; init; } = CategoryNormal;
+        // 类别内序号：该条目是本层此类别（战斗/问号/…）序列中的第几项。
+        // 战斗与问号类型的序列各自固定（每进一个同类房间消耗序列下一项），
+        // 因此它是路线无关的稳定身份，用于地图节点悬浮联动。
+        public int SeqIdx { get; init; }
         public MapPointHistoryEntry Entry { get; set; } = null!;
     }
 
-    // 每条 Episode 都是“出生→本次死亡”的完整历史。相同内容在不同时间线
-    // 可能因为改走路线或跳过节点而落在不同列表下标，所以不能再用到访序号
-    // 作为身份。相同事件/遭遇在一条生命中的第 N 次出现视为同一条记录；
-    // 后读到的 Episode 更新详情，但保留该记录第一次出现时的排列位置。
+    internal const string CategoryNormal = "normal";
+    internal const string CategoryElite = "elite";
+    internal const string CategoryUnknown = "unknown";
+    internal const string CategoryShop = "shop";
+
+    // 每条 Episode 都是“出生→本次死亡”的完整历史。合并按（层, 类别, 类别内
+    // 序号）进行，同序号冲突时保留较新记忆（“最新”原则）：路线变化只改变
+    // 战斗与问号的交错，不改变各自的序列，预告因此始终与地图节点对得上。
     private static List<MergedMemoryEntry> BuildMergedMemories()
     {
-        var merged = new Dictionary<(int Act, string Identity, int Occurrence), MergedMemoryEntry>();
-        var nextOrder = 0;
+        var merged = new Dictionary<(int Act, string Category, int SeqIdx), MergedMemoryEntry>();
         for (var i = 0; i < AmnesiaState.GetEpisodeCount(); i++)
         {
             var episode = AmnesiaState.GetEpisode(i);
             if (episode is null)
                 continue;
-
-            CollectEntries(merged, episode.HistoryEntries, ref nextOrder);
+            CollectEntries(merged, episode.HistoryEntries);
         }
 
-        return merged.Values.OrderBy(entry => entry.Order).ToList();
+        return merged.Values
+            .OrderBy(memory => memory.Act)
+            .ThenBy(memory => memory.SeqIdx)
+            .ToList();
     }
 
     private static void CollectEntries(
-        Dictionary<(int Act, string Identity, int Occurrence), MergedMemoryEntry> merged,
-        IReadOnlyList<IReadOnlyList<MapPointHistoryEntry>> acts,
-        ref int nextOrder)
+        Dictionary<(int Act, string Category, int SeqIdx), MergedMemoryEntry> merged,
+        IReadOnlyList<IReadOnlyList<MapPointHistoryEntry>> acts)
     {
-        var occurrences = new Dictionary<(int Act, string Identity), int>();
         for (var act = 0; act < acts.Count; act++)
         {
-            var actEntries = acts[act];
-            for (var row = 0; row < actEntries.Count; row++)
+            // 每层每类别独立计数：本条命第 N 次进入的战斗/问号即序列第 N 项。
+            var counters = new Dictionary<string, int>();
+            foreach (var entry in acts[act])
             {
-                var entry = actEntries[row];
-                var identity = BuildEntryIdentity(entry);
-                var occurrenceKey = (act, identity);
-                occurrences.TryGetValue(occurrenceKey, out var occurrence);
-                occurrences[occurrenceKey] = occurrence + 1;
-
-                var key = (act, identity, occurrence);
-                if (merged.TryGetValue(key, out var existing))
+                foreach (var category in GetEntryCategories(entry))
                 {
-                    existing.Entry = entry;
-                }
-                else
-                {
-                    merged[key] = new MergedMemoryEntry
+                    counters.TryGetValue(category, out var seq);
+                    counters[category] = seq + 1;
+                    merged[(act, category, seq + 1)] = new MergedMemoryEntry
                     {
                         Act = act,
-                        Order = nextOrder++,
-                        Row = row,
+                        Category = category,
+                        SeqIdx = seq + 1,
                         Entry = entry
                     };
                 }
@@ -190,45 +198,41 @@ internal static class EncounterPreviewOverlay
         }
     }
 
-    private static string BuildEntryIdentity(MapPointHistoryEntry entry)
-    {
-        var rooms = entry.Rooms.Select(room =>
-        {
-            var modelId = room.ModelId?.ToString() ?? string.Empty;
-            var monsters = string.Join(",", room.MonsterIds.Select(id => id.ToString()));
-            // 有事件/遭遇 ModelId 时它就是稳定身份；怪物列表可能因版本、
-            // 修正器或生成细节改变，不应让同一遭遇变成一条新记录。
-            var contentId = modelId.Length > 0 ? modelId : monsters;
-            return $"{room.RoomType}:{contentId}";
-        });
-        return $"{entry.MapPointType}|{string.Join(">", rooms)}";
-    }
-
     private static List<MergedMemoryEntry> SelectEntries(
-        IReadOnlyList<MergedMemoryEntry> merged,
-        int act,
-        Func<MapPointHistoryEntry, bool> include)
+        IReadOnlyList<MergedMemoryEntry> merged, int act, string category)
     {
         return merged
-            .Where(memory => memory.Act == act && include(memory.Entry))
-            .OrderBy(memory => memory.Order)
+            .Where(memory => memory.Act == act && memory.Category == category)
+            .OrderBy(memory => memory.SeqIdx)
             .ToList();
     }
 
-    // 普通怪物：普通怪地图点，以及问号房里打出的普通战斗（同步展示）。
-    private static bool IsNormalEntry(MapPointHistoryEntry entry) =>
-        entry.MapPointType == MapPointType.Monster ||
-        (entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Monster));
+    // 一条历史条目所属的类别：问号房打出的战斗/精英同时归入对应怪物类别
+    // （它既占问号序列，也占对应怪物的遭遇池序列）。
+    private static List<string> GetEntryCategories(MapPointHistoryEntry entry)
+    {
+        var result = new List<string>();
+        if (entry.MapPointType == MapPointType.Monster ||
+            (entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Monster)))
+            result.Add(CategoryNormal);
+        if (entry.MapPointType == MapPointType.Elite ||
+            (entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Elite)))
+            result.Add(CategoryElite);
+        if (entry.MapPointType == MapPointType.Unknown)
+            result.Add(CategoryUnknown);
+        if (entry.MapPointType == MapPointType.Shop)
+            result.Add(CategoryShop);
+        return result;
+    }
 
-    private static bool IsEliteEntry(MapPointHistoryEntry entry) =>
-        entry.MapPointType == MapPointType.Elite ||
-        (entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Elite));
-
-    private static bool IsUnknownEntry(MapPointHistoryEntry entry) =>
-        entry.MapPointType == MapPointType.Unknown;
-
-    private static bool IsShopEntry(MapPointHistoryEntry entry) =>
-        entry.MapPointType == MapPointType.Shop;
+    private static List<string> GetPointCategories(MapPointType pointType) => pointType switch
+    {
+        MapPointType.Monster => new List<string> { CategoryNormal },
+        MapPointType.Elite => new List<string> { CategoryElite },
+        MapPointType.Unknown => new List<string> { CategoryUnknown },
+        MapPointType.Shop => new List<string> { CategoryShop },
+        _ => new List<string>()
+    };
 
     // 把预告条目拼成原版历史记录需要的最小数据：当前层一个分组。
     private static RunHistory BuildPreviewHistory(
@@ -303,16 +307,98 @@ internal static class EncounterPreviewOverlay
         if (state is null)
             return;
 
-        var coord = point.Point.coord;
-        if (!PreviewRowsByCoord.TryGetValue((state.CurrentActIndex, coord.row), out var row) ||
-            !GodotObject.IsInstanceValid(row))
+        var act = state.CurrentActIndex;
+        var history = act < state.MapPointHistory.Count ? state.MapPointHistory[act] : null;
+        if (history is null)
             return;
 
-        // 不在预告中的节点查不到行，自然没有高亮。
-        if (highlighted)
-            row.Highlight();
+        var coord = point.Point.coord;
+        var visited = state.VisitedMapCoords.Any(v => v.col == coord.col && v.row == coord.row);
+
+        // 类别判定：已到访的节点按它实际发生的内容（问号房打出战斗时两个
+        // 类别都算）；未到访的按地图点类型（问号房未来会掷出什么都无法
+        // 预知，只归入问号序列）。
+        MapPointHistoryEntry? visitedEntry =
+            visited && coord.row < history.Count ? history[coord.row] : null;
+        var categories = visitedEntry is not null
+            ? GetEntryCategories(visitedEntry)
+            : GetPointCategories(point.Point.PointType);
+
+        foreach (var category in categories)
+        {
+            var seqIdx = ResolveSequenceIndex(state, history, point.Point, category, visited);
+            if (!seqIdx.HasValue)
+                continue;
+            if (!PreviewRowsBySequence.TryGetValue((act, category, seqIdx.Value), out var rows))
+                continue;
+
+            foreach (var previewRow in rows)
+            {
+                if (!GodotObject.IsInstanceValid(previewRow))
+                    continue;
+                if (highlighted)
+                    previewRow.Highlight();
+                else
+                    previewRow.Unhighlight();
+            }
+        }
+    }
+
+    // 计算地图节点在其类别序列中的序号。已到访：原生历史 0..row 中同类别的
+    // 条目数（历史随真实路线走）。未到访：沿地图父节点链向上找最近的已到访
+    // 祖先，序号 = 祖先处已消耗的同类别数 + 途中（含本节点）的同类别节点数
+    // ——序号跟着节点所在的分支走，切路线不会互相串行。多父分叉取列序靠前
+    // 的一条（近似）；找不到已到访祖先时按整条历史已消耗数兜底。
+    private static int? ResolveSequenceIndex(
+        RunState state,
+        IReadOnlyList<MapPointHistoryEntry> history,
+        MapPoint node,
+        string category,
+        bool visited)
+    {
+        if (visited)
+        {
+            var row = node.coord.row;
+            var visitedCount = 0;
+            var last = Math.Min(row, history.Count - 1);
+            for (var i = 0; i <= last; i++)
+                if (GetEntryCategories(history[i]).Contains(category))
+                    visitedCount++;
+            return visitedCount > 0 ? visitedCount : null;
+        }
+
+        var extra = 0;
+        var current = node;
+        MapPoint? anchor = null;
+        var guard = 0;
+        while (current is not null && guard++ < 200)
+        {
+            if (state.VisitedMapCoords.Any(v => v.col == current.coord.col && v.row == current.coord.row))
+            {
+                anchor = current;
+                break;
+            }
+            if (GetPointCategories(current.PointType).Contains(category))
+                extra++;
+            current = current.parents.OrderBy(parent => parent.coord.col).FirstOrDefault();
+        }
+
+        var consumed = 0;
+        if (anchor is not null)
+        {
+            var last = Math.Min(anchor.coord.row, history.Count - 1);
+            for (var i = 0; i <= last; i++)
+                if (GetEntryCategories(history[i]).Contains(category))
+                    consumed++;
+        }
         else
-            row.Unhighlight();
+        {
+            foreach (var entry in history)
+                if (GetEntryCategories(entry).Contains(category))
+                    consumed++;
+        }
+
+        return consumed + extra;
     }
 }
 

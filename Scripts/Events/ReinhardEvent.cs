@@ -10,9 +10,15 @@ internal static class ReinhardEventState
     private static int _conversionPending;
     private static int _conversionApplying;
     private static int _conversionVisualActive;
+    private static int _autoPlayInProgress;
 
     public static bool ConversionPending => Volatile.Read(ref _conversionPending) != 0;
     public static bool ConversionVisualActive => Volatile.Read(ref _conversionVisualActive) != 0;
+    public static bool IsAutoPlayInProgress => Volatile.Read(ref _autoPlayInProgress) != 0;
+
+    public static void MarkAutoPlayInProgress() => Volatile.Write(ref _autoPlayInProgress, 1);
+
+    public static void ClearAutoPlayInProgress() => Volatile.Write(ref _autoPlayInProgress, 0);
 
     public static void ResetCombat()
     {
@@ -380,8 +386,18 @@ internal static class ReinhardEventState
             var context = new HookPlayerChoiceContext(
                 reinhard, 0UL, combatState, GameActionType.Combat);
 
-            await CardCmd.AutoPlay(
-                context, reinhard, player.Creature, AutoPlayType.Default, false, false);
+            // 自动出牌期间置标记：卡牌伤害动画结束后，存活的怪物会被强制
+            // 击杀（见 ReinhardCardPlayback），防止拦截的回合流程卡死。
+            ReinhardEventState.MarkAutoPlayInProgress();
+            try
+            {
+                await CardCmd.AutoPlay(
+                    context, reinhard, player.Creature, AutoPlayType.Default, false, false);
+            }
+            finally
+            {
+                ReinhardEventState.ClearAutoPlayInProgress();
+            }
             ModLog.Write("Reinhard card generated and auto-played with native card-play flow.");
         }
         catch (Exception exception)

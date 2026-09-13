@@ -1,6 +1,7 @@
 using System.Reflection;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Models.RelicPools;
 
 namespace ReturnByDeath;
 
@@ -22,6 +23,19 @@ public static class Entry
 
         // 回归过程可能跨越一次游戏进程重启，因此恢复持久化的重放标记。
         EncounterJournalStore.RestoreReplayMode();
+
+        // 三个强欲遗物挂到 FallbackRelicPool：这只让 RelicModel.Pool 能解析
+        // （悬停提示、能量图标颜色需要），该池不参与商店与奖励生成。
+        ModHelper.AddModelToPool<FallbackRelicPool, PainOfThePast>();
+        ModHelper.AddModelToPool<FallbackRelicPool, SacrificeOfThePresent>();
+        ModHelper.AddModelToPool<FallbackRelicPool, BonesOfTheFuture>();
+        ModHelper.AddModelToPool<FallbackRelicPool, HeartOfGreed>();
+        ModHelper.AddModelToPool<FallbackRelicPool, OttoContract>();
+        ModHelper.AddModelToPool<FallbackRelicPool, HeartOfSloth>();
+        ModHelper.AddModelToPool<FallbackRelicPool, HeartOfPride>();
+
+        // 新遗物的中文词条：若 mod 初始化晚于首次语言表加载，这里补一次注入。
+        GreedRelicText.Inject();
         ModLog.Write("Initialized.");
     }
 }

@@ -48,11 +48,15 @@
     <ModAudioFiles Include="Resource/音效/**/*" Exclude="Resource/音效/**/*.DS_Store" />
     <ModVideoFiles Include="Resource/视频/**/*.ogv" Exclude="Resource/视频/**/*.DS_Store" />
     <ModStaticFiles Include="Resource/图片/选项按钮贴图/*.png" />
+    <!-- 艾姬多娜事件（墓碑巨大花卉）的背景图。DLL 从 mod 根目录读取它。 -->
+    <ModStaticFiles Include="Resource/图片/艾姬多娜-背景.png" />
     <ModStaticFiles Include="Resource/图片/怠惰结局触发.png" />
     <!-- 怠惰 IF 线进入时显示的羽化结局图。DLL 从 mod 根目录读取它。 -->
     <ModStaticFiles Include="Resource/图片/怠惰结局触发-羽化.png" />
     <!-- 莱茵哈鲁特被非正常删牌时显示的傲慢结局图。DLL 从 mod 根目录读取它。 -->
     <ModStaticFiles Include="Resource/图片/傲慢结局触发-羽化.png" />
+    <!-- 拿到强欲之心（进入强欲 IF 线）时显示的羽化结局图。DLL 从 mod 根目录读取它。 -->
+    <ModStaticFiles Include="Resource/图片/强欲结局触发-羽化.png" />
     <ModStaticFiles Include="Resource/图片/cutin-1.png" />
     <ModStaticFiles Include="Resource/图片/cutin-2.png" />
     <ModStaticFiles Include="Resource/图片/cutin-3.png" />

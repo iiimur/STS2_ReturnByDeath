@@ -73,7 +73,28 @@ internal static class ReinhardRemovalTracking
     {
         await nativeRemoval;
         RouteState.EnterPrideRoute();
+        await GrantHeartOfPrideAsync();
         PrideEndingOverlay.TryShow();
+    }
+
+    // 傲慢线的新机制：进入时授予“傲慢之心”——死亡诅咒变为 0 费可打出，
+    // 打出时三选一升级牌进手牌。旧的“回归不加诅咒+血量+1”已删除（与强欲
+    // 线重复），诅咒照常叠加，如今它们是可以打出去的燃料而非纯粹的负担。
+    private static async Task GrantHeartOfPrideAsync()
+    {
+        try
+        {
+            var player = RunManager.Instance?.DebugOnlyGetState()?.Players.FirstOrDefault();
+            if (player is null || player.Relics.Any(relic => relic is HeartOfPride))
+                return;
+
+            await RelicCmd.Obtain<HeartOfPride>(player);
+            ModLog.Write("Pride ending entered; Heart of Pride granted.");
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Heart of Pride grant failed: {exception}");
+        }
     }
 }
 
@@ -237,6 +258,21 @@ internal static class ReinhardCardPlayback
             .WithHitVfxNode(enemy => NGrandFinaleImpactVfx.Create(enemy))
             .WithHitFx(null, null, "blunt_attack.mp3")
             .Execute(choiceContext);
+
+        // 事件自动出牌发生在“结束回合”被拦截的窗口里：799 点伤害可能被
+        // 格挡、减伤或超高生命吞掉而没有杀死全部敌人，战斗会卡在拦截的
+        // 回合流程上无法继续。动画播完后把仍存活的怪物强制击杀，走原生
+        // 死亡链，胜利结算由原版检查与 ReinhardCardEffectSettlementPatch
+        // 收尾。玩家手动打出这张卡时不拦截回合流程，不在此列。
+        if (ReinhardEventState.IsAutoPlayInProgress)
+        {
+            var survivors = combatState.Enemies.Where(enemy => enemy.IsAlive).ToList();
+            if (survivors.Count > 0)
+            {
+                await CreatureCmd.Kill(survivors, true);
+                ModLog.Write($"Reinhard auto-play force-killed {survivors.Count} surviving enemy(ies) after the damage animation.");
+            }
+        }
 
         // 只使用原版 AttackCommand 的伤害结算；胜利收尾由下面的原版
         // EndCardOrPotionEffect 补丁负责，避免绕过原版结算链。

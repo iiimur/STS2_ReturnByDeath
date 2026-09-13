@@ -335,6 +335,9 @@ internal static class NewRunPatch
         AmnesiaState.ResetForNewRun();
         RemEventState.ResetForNewRun();
         ProxyModeState.Reset();
+        EchidnaVisitState.ResetForNewRun();
+        GreedIfState.ResetForNewRun();
+        GreedFinaleState.Reset();
         RecoveryMarker.Clear();
         // Encounter journal data belongs to one run. Never let a prior run's
         // coordinates affect the first rooms of a new run.

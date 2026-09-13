@@ -413,7 +413,10 @@ internal static class RemEventState
                 }
 
                 // 红色“好的”：进入「怠惰」IF 线，掐断自杀流程。
+                // 同时授予“怠惰之心”遗物（获得钩子对已进入的怠惰线是 no-op），
+                // 并写入检查点：死亡回归后遗物与线路都不消失。
                 RouteState.EnterSlothRoute();
+                await GrantHeartOfSlothAsync();
                 SlothEndingOverlay.TryShow();
                 MarkUsed();
                 FinishFlow("sloth IF route entered.");
@@ -429,9 +432,28 @@ internal static class RemEventState
         }
     }
 
-    private static async Task WaitSeconds(double seconds)
+    // 选择“好的”进入怠惰线时的遗物授予：怠惰之心本身就是“进入怠惰线”的
+    // 载体，拿到手即写入检查点，死亡回归不消失。
+    private static async Task GrantHeartOfSlothAsync()
     {
-        var tree = Engine.GetMainLoop() as SceneTree;
+        try
+        {
+            var player = RunManager.Instance?.DebugOnlyGetState()?.Players.FirstOrDefault();
+            if (player is null || player.Relics.Any(relic => relic is HeartOfSloth))
+                return;
+
+            var relic = await RelicCmd.Obtain<HeartOfSloth>(player);
+            CheckpointStore.RecordEchidnaRelic(relic, player);
+            ModLog.Write("Sloth IF route entered; Heart of Sloth granted and persisted.");
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Heart of Sloth grant failed: {exception}");
+        }
+    }
+
+    private static async Task WaitSeconds(double seconds)
+    {        var tree = Engine.GetMainLoop() as SceneTree;
         if (tree is null)
             return;
         // ToSignal 在主循环恢复，保证后续节点操作仍在主线程执行。

@@ -28,6 +28,8 @@ internal static class CheckpointStore
             File.WriteAllText(CheckpointPath, JsonSerializationUtility.ToJson(snapshot));
             File.WriteAllText(CheckpointVersionPath, CheckpointVersion);
             RecoveryMarker.Complete();
+            // 新的存档点即新的诅咒预算锚点：a=0，b=0。
+            CurseBudget.Reset();
             ModLog.Write($"Checkpoint captured for act {snapshot.CurrentActIndex}; pre-finished room: {preFinishedRoom is not null}.");
         }
         catch (Exception exception)
@@ -61,6 +63,15 @@ internal static class CheckpointStore
         ModLog.Write($"New run started; initial max health set to {InitialMaxHealth}. Current health remains unchanged until the first Ancient choice.");
     }
 
+    // 强欲之心的序列化遗物 ID（ModelId 是 record，直接按值比较）。
+    private static readonly ModelId HeartOfGreedId = new("RELIC", "HEART_OF_GREED");
+
+    // 强欲之心是否在场：运行时遗物列表与检查点序列化遗物都查一遍，
+    // 兼容回归过程中任一时机的调用。
+    private static bool HoldsHeartOfGreed(Player player, SerializablePlayer savedPlayer) =>
+        player.Relics.Any(relic => relic is HeartOfGreed) ||
+        savedPlayer.Relics.Any(relic => relic.Id == HeartOfGreedId);
+
     public static async Task ApplyRecoveryState(RunState state, SerializableRun checkpoint)
     {
         var count = Math.Min(state.Players.Count, checkpoint.Players.Count);
@@ -69,75 +80,64 @@ internal static class CheckpointStore
             var player = state.Players[i];
             var savedPlayer = checkpoint.Players[i];
 
-            // 傲慢线触发后的隐藏效果：回归不再添加任何诅咒，且血量与血量上限
-            // 各 +1。加成同时写回检查点，多次回归持续累计。
-            var hpBonus = RouteState.IsPrideRoute ? 1 : 0;
+            // 傲慢线的旧特权（回归不加诅咒+血量与上限各+1）已删除：进入傲慢
+            // 线时改为授予“傲慢之心”，诅咒照常叠加但可被打出——不再与强欲
+            // 线的回归加成重复。
+            // 强欲之心：每次回归血量与血量上限各 +2（描述只谈上限，是因为
+            // 原生加上限时会同步加当前生命；这里直接把两者都写进检查点）。
+            // 加成同时写回检查点，多次回归持续累计。
+            var holdsHeartOfGreed = HoldsHeartOfGreed(player, savedPlayer);
+            var hpBonus = holdsHeartOfGreed ? 2 : 0;
             savedPlayer.MaxHp += hpBonus;
             savedPlayer.CurrentHp += hpBonus;
 
             // Set the runtime value after saved-run setup as well as preserving
             // the serialized value, so max HP gains survive the return.
             player.Creature.SetMaxHpInternal(savedPlayer.MaxHp);
-            CardModel? curse;
             if (AmnesiaState.TimelineHidden)
             {
                 // 失忆回归：卡组重置为开局初始状态，且不添加回归诅咒。
-                curse = null;
                 // 失忆线仍按剧情规则静默重建初始卡组。
                 await ResetDeckToInitialAsync(player);
                 ModLog.Write("Amnesia recovery: deck reset to the initial state; no curse added.");
             }
+            else if (holdsHeartOfGreed)
+            {
+                // 强欲之心：不再愧疚——愧疚值固定为 0，本次回归不加任何诅咒，
+                // 之前累计的预算也一并清零（之后的死亡不再增长）。
+                CurseBudget.Reset("Heart of Greed recovery");
+                ModLog.Write("Heart of Greed recovery: no curse added; HP and max HP increased by 2.");
+            }
             else
             {
-                var guiltyCount = player.Deck.Cards.Count(card => card is Guilty);
-                curse = RouteState.IsPrideRoute
-                    ? null
-                    : guiltyCount >= 3
-                        ? state.CreateCard<Injury>(player)
-                        : state.CreateCard<Guilty>(player);
-
-                if (curse is not null)
-                {
-                    try
-                    {
-                        var addResult = await CardPileCmd.Add(curse, PileType.Deck);
-                        CardCmd.PreviewCardPileAdd(addResult);
-                        ModLog.Write($"Recovery curse added with the native deck animation: {curse.Id}.");
-                    }
-                    catch (Exception exception)
-                    {
-                        ModLog.Write($"Animated recovery curse add failed; using silent fallback: {exception}");
-                        player.Deck.AddInternal(curse, silent: true);
-                        try
-                        {
-                            RecordCardGains(new[] { curse }, "recovery curse fallback");
-                        }
-                        catch (Exception persistenceException)
-                        {
-                            ModLog.Write($"Recovery curse checkpoint update failed: {persistenceException.Message}");
-                        }
-                    }
-                }
-
-                if (RouteState.IsPrideRoute)
-                    ModLog.Write("Pride route recovery: no curse added.");
+                // 诅咒预算：每次死亡叠加施加“愧疚 a 张 + 受伤 b 张”（a/b 为
+                // 当前预算值：a++、b += a/3 后的结果）。继承牌组里已有此前
+                // 回归加入的诅咒，新诅咒直接叠加上去——第 1 次死亡 +1、
+                // 第 2 次 +2、第 3 次 +3+1 受伤……施加数量只由死亡次数
+                // 决定，无法刷改。
+                var (guilties, injuries) = CurseBudget.Current;
+                for (var guilt = 0; guilt < guilties; guilt++)
+                    await AddCurseAsync<Guilty>(player, state);
+                for (var inj = 0; inj < injuries; inj++)
+                    await AddCurseAsync<Injury>(player, state);
+                ModLog.Write($"Recovery curses applied from the death budget: guilty x{guilties}, injury x{injuries}.");
             }
             // 回归血量使用检查点保存的 CurrentHp（傲慢线已含 +1 加成）。
             player.Creature.SetCurrentHpInternal(savedPlayer.CurrentHp);
-            ModLog.Write($"Recovery health restored from checkpoint: {savedPlayer.CurrentHp}/{savedPlayer.MaxHp}; curse added: {curse?.Id}.");
+            ModLog.Write($"Recovery health restored from checkpoint: {savedPlayer.CurrentHp}/{savedPlayer.MaxHp}.");
         }
 
-        if (RouteState.IsPrideRoute)
+        if (checkpoint.Players.Any(saved => saved.Relics.Any(relic => relic.Id == HeartOfGreedId)))
         {
-            // 把 +1 加成写回检查点文件：下一次死亡回归以新的血量基准继续累计。
+            // 把回归加成写回检查点文件：下一次死亡回归以新的血量基准继续累计。
             try
             {
                 File.WriteAllText(CheckpointPath, JsonSerializationUtility.ToJson(checkpoint));
-                ModLog.Write("Pride route HP bonus written back to the checkpoint.");
+                ModLog.Write("Recovery HP bonus written back to the checkpoint.");
             }
             catch (Exception exception)
             {
-                ModLog.Write($"Could not write the pride HP bonus back to the checkpoint: {exception.Message}");
+                ModLog.Write($"Could not write the recovery HP bonus back to the checkpoint: {exception.Message}");
             }
         }
 
@@ -190,22 +190,147 @@ internal static class CheckpointStore
         if (!TryLoad(out var checkpoint))
             return false;
 
-        // 死亡时牌组不再覆盖检查点。获得卡牌和升级已经在发生当刻增量写入，
-        // 删除与附魔等未登记变化自然随时间线回滚。
+        // 简单继承：死亡时的最新卡组直接覆盖检查点牌组（含此前回归加入的
+        // 诅咒——新诅咒按预算叠加施加，见 ApplyRecoveryState）。
+        CopyDeathDeckToCheckpoint(deathState, checkpoint);
         AmnesiaState.CaptureDeathEpisode(checkpoint, deathState);
+        // 诅咒预算：先计算后施加。a++、b += a/3；回归时按 a/b 施加诅咒。
+        // 持有强欲之心时愧疚值固定为 0：死亡不再累计预算（回归时也会清零）。
+        if (deathState.Players.Any(player => player.Relics.Any(relic => relic.Id == HeartOfGreedId)))
+            ModLog.Write("Heart of Greed held at death; curse budget growth suppressed.");
+        else
+            CurseBudget.OnDeath();
         CopyPersistentNonDeckState(deathState, checkpoint);
 
         try
         {
             File.WriteAllText(CheckpointPath, JsonSerializationUtility.ToJson(checkpoint));
             try { File.Delete(LegacyPendingRestoredCardsPath); } catch { }
-            ModLog.Write("Non-deck persistent death state merged into checkpoint; checkpoint deck kept unchanged.");
+            ModLog.Write("Checkpoint deck replaced with the deck at death time; persistent state merged.");
             return true;
         }
         catch (Exception exception)
         {
             ModLog.Write($"Death-state merge failed: {exception}");
             return false;
+        }
+    }
+
+    private static void CopyDeathDeckToCheckpoint(SerializableRun deathState, SerializableRun checkpoint)
+    {
+        var count = Math.Min(deathState.Players.Count, checkpoint.Players.Count);
+        for (var i = 0; i < count; i++)
+        {
+            checkpoint.Players[i].Deck = deathState.Players[i].Deck.ToList();
+            ModLog.Write($"Checkpoint deck inherited from death state: {checkpoint.Players[i].Deck.Count} cards.");
+        }
+    }
+
+    // 诅咒预算：以最新存档点为锚点。存档点捕获时清零（a=0，b=0）；每死亡
+    // 一次先计算（a++，b += a/3）再施加。回归后的诅咒固定为“愧疚 a 张 +
+    // 受伤 b 张”，数量只由死亡次数决定，无法通过死亡前的牌组操作刷改。
+    internal static class CurseBudget
+    {
+        private sealed class BudgetFile
+        {
+            public int A { get; set; }
+            public int B { get; set; }
+        }
+
+        private static readonly object Sync = new();
+        private static readonly string BudgetPath = Path.Combine(
+            RecoveryMarker.ModDirectory,
+            "return-by-death.curse-budget.json");
+        private static BudgetFile? _file;
+
+        private static BudgetFile EnsureLoaded()
+        {
+            if (_file is not null)
+                return _file;
+            try
+            {
+                _file = JsonSerializer.Deserialize<BudgetFile>(File.ReadAllText(BudgetPath)) ?? new BudgetFile();
+            }
+            catch (Exception exception)
+            {
+                ModLog.Write($"Curse budget load failed; starting from zero: {exception.Message}");
+                _file = new BudgetFile();
+            }
+            return _file;
+        }
+
+        private static void Save()
+        {
+            try
+            {
+                File.WriteAllText(BudgetPath, JsonSerializer.Serialize(EnsureLoaded()));
+            }
+            catch (Exception exception)
+            {
+                ModLog.Write($"Curse budget save failed: {exception.Message}");
+            }
+        }
+
+        public static void Reset(string reason = "checkpoint capture")
+        {
+            lock (Sync)
+            {
+                var file = EnsureLoaded();
+                file.A = 0;
+                file.B = 0;
+                Save();
+            }
+            ModLog.Write($"Curse budget reset ({reason}): a=0, b=0.");
+        }
+
+        public static void OnDeath()
+        {
+            lock (Sync)
+            {
+                var file = EnsureLoaded();
+                file.A++;
+                file.B += file.A / 3;
+                Save();
+                ModLog.Write($"Curse budget after death: a={file.A}, b={file.B}.");
+            }
+        }
+
+        public static (int Guilties, int Injuries) Current
+        {
+            get
+            {
+                lock (Sync)
+                {
+                    var file = EnsureLoaded();
+                    return (file.A, file.B);
+                }
+            }
+        }
+    }
+
+    // 按预算施加一张诅咒卡：优先走原生加牌动画，失败时静默入组兜底。
+    private static async Task AddCurseAsync<TCard>(Player player, RunState state)
+        where TCard : CardModel
+    {
+        var curse = state.CreateCard<TCard>(player);
+        try
+        {
+            var addResult = await CardPileCmd.Add(curse, PileType.Deck);
+            CardCmd.PreviewCardPileAdd(addResult);
+            ModLog.Write($"Recovery curse added with the native deck animation: {curse.Id}.");
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Animated recovery curse add failed; using silent fallback: {exception}");
+            player.Deck.AddInternal(curse, silent: true);
+            try
+            {
+                RecordCardGains(new[] { curse }, "recovery curse fallback");
+            }
+            catch (Exception persistenceException)
+            {
+                ModLog.Write($"Recovery curse checkpoint update failed: {persistenceException.Message}");
+            }
         }
     }
 
@@ -261,6 +386,8 @@ internal static class CheckpointStore
         try { File.Delete(CheckpointPath); } catch { }
         try { File.Delete(CheckpointVersionPath); } catch { }
         try { File.Delete(LegacyPendingRestoredCardsPath); } catch { }
+        // 新开局：诅咒预算一并清零。
+        CurseBudget.Reset();
     }
 
     private static void CopyPersistentNonDeckState(
@@ -352,6 +479,41 @@ internal static class CheckpointStore
 
             File.WriteAllText(CheckpointPath, JsonSerializationUtility.ToJson(checkpoint));
             ModLog.Write($"Checkpoint deck recorded {changed} gained card(s): {reason}.");
+        }
+    }
+
+    // 艾姬多娜事件的试验遗物（过去的苦痛/现在的牺牲/未来的骨骸）与强欲之心：
+    // 获得即写入最新检查点，因此死亡回归后依然保留，不随时间线回滚消失。
+    // 其余遗物仍遵循检查点快照规则（回归时回到存档点时的遗物列表）。
+    public static void RecordEchidnaRelic(RelicModel relic, Player owner)
+    {
+        if (relic is not (PainOfThePast or SacrificeOfThePresent or BonesOfTheFuture or HeartOfGreed or HeartOfSloth or HeartOfPride) ||
+            !File.Exists(CheckpointPath) || !File.Exists(CheckpointVersionPath))
+            return;
+
+        lock (Sync)
+        {
+            if (!TryLoad(out var checkpoint))
+                return;
+
+            var playerIndex = checkpoint.Players.FindIndex(player => player.NetId == owner.NetId);
+            if (playerIndex < 0)
+                return;
+
+            var savedPlayer = checkpoint.Players[playerIndex];
+            if (savedPlayer.Relics.Any(saved => saved.Id == relic.Id))
+                return;
+
+            savedPlayer.Relics.Add(relic.ToSerializable());
+            try
+            {
+                File.WriteAllText(CheckpointPath, JsonSerializationUtility.ToJson(checkpoint));
+                ModLog.Write($"Echidna relic persisted into checkpoint: {relic.Id}.");
+            }
+            catch (Exception exception)
+            {
+                ModLog.Write($"Echidna relic checkpoint write failed: {exception.Message}");
+            }
         }
     }
 
