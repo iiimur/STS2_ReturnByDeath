@@ -487,9 +487,22 @@ internal static class CheckpointStore
     // 其余遗物仍遵循检查点快照规则（回归时回到存档点时的遗物列表）。
     public static void RecordEchidnaRelic(RelicModel relic, Player owner)
     {
-        if (relic is not (PainOfThePast or SacrificeOfThePresent or BonesOfTheFuture or HeartOfGreed or HeartOfSloth or HeartOfPride) ||
+        if (relic is not (PainOfThePast or SacrificeOfThePresent or BonesOfTheFuture or HeartOfGreed or HeartOfSloth or HeartOfPride or OttoContract) ||
             !File.Exists(CheckpointPath) || !File.Exists(CheckpointVersionPath))
             return;
+
+        switch (relic)
+        {
+            case PainOfThePast:
+                IfAchievements.Unlock("echidna_past");
+                break;
+            case SacrificeOfThePresent:
+                IfAchievements.Unlock("echidna_present");
+                break;
+            case BonesOfTheFuture:
+                IfAchievements.Unlock("echidna_future");
+                break;
+        }
 
         lock (Sync)
         {

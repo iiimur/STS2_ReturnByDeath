@@ -14,6 +14,12 @@ internal static class EventDeathWarningInterlude
         if (SlothRouteRules.IsInEventRoom || player is null || Volatile.Read(ref _active) != 0)
             return false;
 
+        // 「强欲」IF 线：不再触发莎提拉演出（黑屏+字幕+“爱你自己”音效）。
+        // 这也是强欲之心“失去 7 点生命却不死”的机制原理——必死判定仍在
+        // （选项红字警告保留），但演出与死亡被强欲之心拦下。
+        if (GreedRoute.IsActive)
+            return false;
+
         // 艾姬多娜的“强欲之心”选项：按设定理应致命所以保留红字警告，
         // 但实际暗中不扣血，因此“爱你自己”的必死演出在这里截断。
         if (option.TextKey == "RBD_FLOWER.HEART")

@@ -140,6 +140,7 @@ internal static class SlothFinalBossTransition
         }
 
         Volatile.Write(ref _started, 1);
+        IfAchievements.Unlock("sloth_ending");
         transitionTask = PlayThenSettleAsync();
         ModLog.Write("Sloth final-boss transition intercepted native EnterNextAct.");
         return true;

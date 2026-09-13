@@ -21,6 +21,27 @@ internal static class TombstoneButtonOpenPatch
         // 地图重新打开意味着墓碑事件已经结束（或本层开始）：复位特殊事件标记。
         TombstoneEntry.ClearSpecialFlower();
         TombstoneEntry.Ensure(__instance);
+        // 沙堡按钮出现期间禁止前进：玩家必须先进入艾姬多娜事件。
+        if (TombstoneEntry.IsButtonVisible)
+            __instance.SetTravelEnabled(false);
+    }
+}
+
+// 沙堡按钮可见期间（且地图已显示），原生流程随后调用的“恢复旅行”
+// 一律否决，防止绕过事件直接前进。地图不可见时的恢复调用不拦：
+// 原生“继续”流程是先 SetTravelEnabled(true) 再 Open，若误杀会导致
+// 事件结束后旅行开关永远关闭（无法前进的旧 bug）。
+[HarmonyPatch(typeof(NMapScreen), nameof(NMapScreen.SetTravelEnabled), new[] { typeof(bool) })]
+internal static class TombstoneTravelVetoPatch
+{
+    [HarmonyPrefix]
+    private static void Prefix(NMapScreen __instance, ref bool enabled)
+    {
+        if (!enabled || !TombstoneEntry.IsButtonVisible || !__instance.IsVisibleInTree())
+            return;
+
+        enabled = false;
+        ModLog.Write("Travel vetoed while the Echidna tombstone is showing.");
     }
 }
 
@@ -31,6 +52,73 @@ internal static class TombstoneEntry
     private static NMapLegendItem? _button;
     private static bool _entering;
 
+    // 墓碑按钮出现的大前提：二层的先古之民选项已完成并存档（Done 后
+    // 由 AncientEventDonePatch 置位）。按局持久化，重启游戏不丢失，
+    // 新开一局清除。
+    internal static class Act2AncientState
+    {
+        private sealed class StateFile
+        {
+            public string? RunKey { get; set; }
+            public bool Done { get; set; }
+        }
+
+        private static readonly string StatePath = Path.Combine(
+            ModLog.ModDirectory, "return-by-death.act2-ancient.json");
+        private static readonly object Sync = new();
+
+        public static bool IsDone
+        {
+            get
+            {
+                lock (Sync)
+                {
+                    try
+                    {
+                        if (!CheckpointStore.TryLoad(out var checkpoint))
+                            return false;
+                        var file = JsonSerializer.Deserialize<StateFile>(File.ReadAllText(StatePath));
+                        return file is not null && file.Done &&
+                               file.RunKey == CheckpointStore.GetRunKey(checkpoint);
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        public static void MarkDone()
+        {
+            lock (Sync)
+            {
+                try
+                {
+                    if (!CheckpointStore.TryLoad(out var checkpoint))
+                        return;
+
+                    File.WriteAllText(StatePath, JsonSerializer.Serialize(new StateFile
+                    {
+                        RunKey = CheckpointStore.GetRunKey(checkpoint),
+                        Done = true,
+                    }));
+                    ModLog.Write("Act-2 Ancient completed and saved; the Echidna tombstone may now appear.");
+                }
+                catch (Exception exception)
+                {
+                    ModLog.Write($"Act-2 Ancient state save failed: {exception.Message}");
+                }
+            }
+        }
+
+        public static void ResetForNewRun()
+        {
+            try { File.Delete(StatePath); }
+            catch (Exception exception) { ModLog.Write($"Could not clear act-2 ancient state: {exception.Message}"); }
+        }
+    }
+
     // 墓碑进入的艾姬多娜事件（巨大花卉特殊化）是否处于激活状态
     // （试验选项替换金币选项、标题改名）。在墓碑点击时置位，
     // 地图重新打开（事件结束/新的一层）时清除。
@@ -39,6 +127,10 @@ internal static class TombstoneEntry
     public static bool SpecialFlowerActive => Volatile.Read(ref _specialFlowerActive) != 0;
 
     public static void ClearSpecialFlower() => Volatile.Write(ref _specialFlowerActive, 0);
+
+    // 沙堡按钮当前是否可见（仅地图打开期间有意义）。
+    internal static bool IsButtonVisible =>
+        _button is not null && GodotObject.IsInstanceValid(_button) && _button.Visible;
 
     public static void Ensure(NMapScreen mapScreen)
     {
@@ -49,6 +141,7 @@ internal static class TombstoneEntry
             var shouldShow = runManager is { IsSingleplayerOrFakeMultiplayer: true } &&
                 state is not null &&
                 state.CurrentActIndex == GreedActIndex &&
+                Act2AncientState.IsDone &&
                 IsTombstoneOpen(state);
 
             if (_button is not null && GodotObject.IsInstanceValid(_button))
@@ -63,7 +156,8 @@ internal static class TombstoneEntry
                 return;
 
             var items = mapScreen.GetNodeOrNull<Control>("%MapLegend")?.GetNodeOrNull<Control>("LegendItems");
-            var reference = items?.GetChildren().OfType<NMapLegendItem>().FirstOrDefault();
+            var reference = items?.GetChildren().OfType<NMapLegendItem>()
+                .FirstOrDefault(item => !item.Name.ToString().StartsWith("@") && !ReferenceEquals(item, _button));
             if (items is null || reference is null)
             {
                 ModLog.Write("Tombstone button skipped: no native legend item to clone.");
@@ -238,6 +332,16 @@ internal static class TombstoneEntry
             return;
         }
 
+        // 关闭残留的奖励覆盖层：原生流程进入新房间时会顺带关闭它，而墓碑
+        // 进入绕过了这一步——残留的全屏遮罩（RewardContainerMask）虽不可见
+        // 却会吃掉事件房间的全部鼠标输入（“第二次进入点不了按钮”的根源）。
+        var overlayStack = MegaCrit.Sts2.Core.Nodes.Screens.Overlays.NOverlayStack.Instance;
+        while (overlayStack?.Peek() is MegaCrit.Sts2.Core.Nodes.Screens.NRewardsScreen lingering)
+        {
+            overlayStack.Remove(lingering);
+            ModLog.Write("Closed a lingering rewards overlay before entering the Echidna event.");
+        }
+
         _entering = true;
         try
         {
@@ -267,17 +371,69 @@ internal static class TombstoneEntry
     }
 }
 
-// 本局是否进入过艾姬多娜事件（仅内存，不持久化）：本局内死亡回归也保持
-// “艾姬多娜”，新开一局自动回到“？？？”。
+// 本局是否进入过艾姬多娜事件：按局持久化（带 run key）——存档重载/重启
+// 游戏后依然是“艾姬多娜”；死亡回归保留（run key 不变）；新开一局清除。
 internal static class EchidnaVisitState
 {
-    private static int _visited;
+    private sealed class StateFile
+    {
+        public string? RunKey { get; set; }
+        public bool Visited { get; set; }
+    }
 
-    public static bool HasVisited => Volatile.Read(ref _visited) != 0;
+    private static readonly string StatePath = Path.Combine(
+        ModLog.ModDirectory, "return-by-death.echidna-visit.json");
+    private static readonly object Sync = new();
 
-    public static void Mark() => Volatile.Write(ref _visited, 1);
+    public static bool HasVisited
+    {
+        get
+        {
+            lock (Sync)
+            {
+                try
+                {
+                    if (!CheckpointStore.TryLoad(out var checkpoint))
+                        return false;
+                    var file = JsonSerializer.Deserialize<StateFile>(File.ReadAllText(StatePath));
+                    return file is not null && file.Visited &&
+                           file.RunKey == CheckpointStore.GetRunKey(checkpoint);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+        }
+    }
 
-    public static void ResetForNewRun() => Volatile.Write(ref _visited, 0);
+    public static void Mark()
+    {
+        lock (Sync)
+        {
+            try
+            {
+                if (!CheckpointStore.TryLoad(out var checkpoint))
+                    return;
+
+                File.WriteAllText(StatePath, JsonSerializer.Serialize(new StateFile
+                {
+                    RunKey = CheckpointStore.GetRunKey(checkpoint),
+                    Visited = true,
+                }));
+            }
+            catch (Exception exception)
+            {
+                ModLog.Write($"Echidna visit state save failed: {exception.Message}");
+            }
+        }
+    }
+
+    public static void ResetForNewRun()
+    {
+        try { File.Delete(StatePath); }
+        catch (Exception exception) { ModLog.Write($"Could not clear echidna visit state: {exception.Message}"); }
+    }
 }
 
 // 「强欲」IF 线标记：在艾姬多娜事件拿到强欲之心时点亮（仅内存，新开一局
@@ -289,7 +445,10 @@ internal static class GreedIfState
 
     public static bool HasEntered => Volatile.Read(ref _entered) != 0;
 
-    public static void Mark() => Volatile.Write(ref _entered, 1);
+    public static void Mark()
+    {
+        Volatile.Write(ref _entered, 1);
+    }
 
     public static void ResetForNewRun() => Volatile.Write(ref _entered, 0);
 }

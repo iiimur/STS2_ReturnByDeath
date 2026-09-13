@@ -312,6 +312,44 @@ internal static class EchidnaButtonEnablePatch
         {
             ModLog.Write($"Echidna button enable failed: {exception.Message}");
         }
+
+        _ = ProbeOptionButtonsAsync(__instance);
+    }
+
+    // 命中探针：事件打开后持续采样选项按钮的输入状态与视口实际悬停控件，
+    // 用于定位“按钮点不了”是覆盖、禁用还是矩形异常。状态变化才记录。
+    private static async Task ProbeOptionButtonsAsync(NEventLayout layout)
+    {
+        try
+        {
+            if (Engine.GetMainLoop() is not SceneTree tree)
+                return;
+
+            var last = "";
+            for (var i = 0; i < 30 && TombstoneEntry.SpecialFlowerActive; i++)
+            {
+                await tree.ToSignal(tree.CreateTimer(0.5d), SceneTreeTimer.SignalName.Timeout);
+
+                var button = layout?.OptionButtons?.FirstOrDefault();
+                if (button is null || !GodotObject.IsInstanceValid(button))
+                    continue;
+
+                var hovered = button.GetViewport().GuiGetHoveredControl();
+                var hoveredDesc = hovered is null ? "<none>" : $"{hovered.GetType().Name}:{hovered.Name}";
+                var state = $"visible={button.IsVisibleInTree()} enabled={button.IsEnabled} " +
+                    $"locked={button.Option?.IsLocked.ToString() ?? "?"} " +
+                    $"rect={button.GlobalPosition}/{button.Size} filter={button.MouseFilter} hovered={hoveredDesc}";
+                if (state == last)
+                    continue;
+
+                last = state;
+                ModLog.Write($"Echidna probe: {state}");
+            }
+        }
+        catch
+        {
+            // 纯诊断。
+        }
     }
 }
 

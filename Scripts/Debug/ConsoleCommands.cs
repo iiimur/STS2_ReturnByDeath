@@ -5,13 +5,18 @@ namespace ReturnByDeath;
 // 仅供本地测试使用的控制台命令：
 //   boss pride
 //   boss sloth
+//   boss greed
+//   ending 1～3  （按列表序号切换结局成就）
+//   event 1～7   （按列表序号切换事件成就）
 //
-// 它们只开启对应 IF 线；第三层和 BOSS 房间由测试者自己使用原版控制台命令进入。
+// boss 系列只开启对应 IF 线；第三层和 BOSS 房间由测试者自己使用原版
+// 控制台命令进入。ending/event 系列按上面数组的展示顺序切换成就状态。
 [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Nodes.Debug.NDevConsole), "ProcessCommand")]
 internal static class ReturnByDeathConsoleCommandPatch
 {
     private const string TestCommand = "boss pride";
     private const string SlothTestCommand = "boss sloth";
+    private const string GreedTestCommand = "boss greed";
     private const string OpenEyeCommand = "map reveal";
 
     [HarmonyPrefix]
@@ -36,6 +41,22 @@ internal static class ReturnByDeathConsoleCommandPatch
             return true;
         }
 
+        if (TryGetIndexedCommand(
+                args, console, allowInputBufferFallback, "ending", out var endingIndex))
+        {
+            ToggleAchievementByIndex(
+                console, "ending", endingIndex, IfAchievements.EndingAchievements);
+            return true;
+        }
+
+        if (TryGetIndexedCommand(
+                args, console, allowInputBufferFallback, "event", out var eventIndex))
+        {
+            ToggleAchievementByIndex(
+                console, "event", eventIndex, IfAchievements.EventAchievements);
+            return true;
+        }
+
         if (MatchesTestCommand(args, TestCommand, console, allowInputBufferFallback))
         {
             RouteState.EnterPrideRoute();
@@ -53,6 +74,13 @@ internal static class ReturnByDeathConsoleCommandPatch
             PrideFinalBossTransition.ResetForNewRun();
             RouteState.EnterSlothRoute();
             ClearConsoleInput(console, SlothTestCommand, "sloth route enabled; map reveal and free travel enabled");
+            return true;
+        }
+
+        if (MatchesTestCommand(args, GreedTestCommand, console, allowInputBufferFallback))
+        {
+            GreedIfState.Mark();
+            ClearConsoleInput(console, GreedTestCommand, "greed IF route enabled");
             return true;
         }
 
@@ -97,9 +125,80 @@ internal static class ReturnByDeathConsoleCommandPatch
     }
 
     internal static bool IsCustomCommandInInputBuffer(
-        MegaCrit.Sts2.Core.Nodes.Debug.NDevConsole console) =>
-        MatchesCommand(ReadInputBuffer(console), TestCommand) ||
-        MatchesCommand(ReadInputBuffer(console), SlothTestCommand);
+        MegaCrit.Sts2.Core.Nodes.Debug.NDevConsole console)
+    {
+        var input = ReadInputBuffer(console);
+        return MatchesCommand(input, TestCommand) ||
+               MatchesCommand(input, SlothTestCommand) ||
+               MatchesCommand(input, GreedTestCommand) ||
+               TryParseIndexedCommand(input, "ending", out _) ||
+               TryParseIndexedCommand(input, "event", out _);
+    }
+
+    private static void ToggleAchievementByIndex(
+        MegaCrit.Sts2.Core.Nodes.Debug.NDevConsole console,
+        string commandName,
+        int oneBasedIndex,
+        IReadOnlyList<IfAchievements.Achievement> achievements)
+    {
+        var command = $"{commandName} {oneBasedIndex}";
+        if (oneBasedIndex < 1 || oneBasedIndex > achievements.Count)
+        {
+            ClearConsoleInput(console, command,
+                $"invalid index; valid range is 1-{achievements.Count}");
+            return;
+        }
+
+        var achievement = achievements[oneBasedIndex - 1];
+        var unlocked = IfAchievements.Toggle(achievement.Id);
+        ClearConsoleInput(console, command,
+            $"{achievement.Name}: {(unlocked ? "unlocked" : "hidden")}");
+    }
+
+    private static bool TryGetIndexedCommand(
+        object[] args,
+        MegaCrit.Sts2.Core.Nodes.Debug.NDevConsole console,
+        bool allowInputBufferFallback,
+        string commandName,
+        out int index)
+    {
+        if (TryParseIndexedCommand(args, commandName, out index))
+            return true;
+
+        return allowInputBufferFallback &&
+               TryParseIndexedCommand(ReadInputBuffer(console), commandName, out index);
+    }
+
+    private static bool TryParseIndexedCommand(
+        object? value,
+        string commandName,
+        out int index)
+    {
+        index = 0;
+        if (value is string text)
+        {
+            var tokens = text.Trim().Split(
+                [' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+            return tokens.Length == 2 &&
+                   string.Equals(tokens[0], commandName, StringComparison.OrdinalIgnoreCase) &&
+                   int.TryParse(tokens[1], out index);
+        }
+
+        if (value is not System.Collections.IEnumerable enumerable)
+            return false;
+
+        var pieces = new List<string>();
+        foreach (var item in enumerable)
+        {
+            if (TryParseIndexedCommand(item, commandName, out index))
+                return true;
+            if (item is string piece && !string.IsNullOrWhiteSpace(piece))
+                pieces.Add(piece.Trim());
+        }
+
+        return pieces.Count > 0 &&
+               TryParseIndexedCommand(string.Join(' ', pieces), commandName, out index);
+    }
 
     private static bool MatchesTestCommand(
         object[] args,

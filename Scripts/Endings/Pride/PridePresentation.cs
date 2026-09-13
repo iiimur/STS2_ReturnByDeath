@@ -14,6 +14,7 @@ internal static class PrideEndingOverlay
         if (Interlocked.Exchange(ref _active, 1) != 0)
             return;
 
+        IfAchievements.Unlock("pride_ending");
         try
         {
             var tree = Engine.GetMainLoop() as SceneTree;

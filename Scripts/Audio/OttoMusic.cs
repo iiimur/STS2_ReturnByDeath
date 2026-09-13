@@ -52,10 +52,23 @@ internal static class OttoAcceptanceMusic
 
     // 在 NRunMusicController.UpdateMusic 的 Prefix 中调用。手动更新环境音，
     // 但跳过原版背景音乐选择/播放，避免拦截短音效或环境音。
+    // 例外：拥有专属音乐/音乐参数切换的房间（火堆、商店、宝箱、精英、
+    // BOSS）。专属 BGM 活动期间进火堆曾稳定触发主线程卡死（房间自己的
+    // FMOD 音乐切换与被 StopMusic 掏空的控制器状态叠加），这些房间一律
+    // 提前结束专属 BGM 并放行完全原生的 UpdateMusic。
     public static bool TrySuppressNativeRunMusic(NRunMusicController controller)
     {
         if (!IsSuppressingNativeRunMusic)
             return false;
+
+        if (RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom is { } room &&
+            room.RoomType is RoomType.RestSite or RoomType.Shop or RoomType.Treasure
+                or RoomType.Elite or RoomType.Boss)
+        {
+            ModLog.Write($"Otto acceptance BGM ended early for the {room.RoomType} room; native music path restored.");
+            CancelAndRestoreNativeMusic();
+            return false;
+        }
 
         controller.UpdateAmbience();
         return true;

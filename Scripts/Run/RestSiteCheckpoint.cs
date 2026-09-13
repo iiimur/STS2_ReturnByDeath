@@ -63,6 +63,7 @@ internal static class RestSiteRecoverySkipOptionsPatch
         // 状态不完整的情况下抛异常导致载入黑屏（恢复落地时也是跳过的）。
         if (!__state && RouteState.IsAtRestedFireCheckpoint)
             __state = true;
+        ModLog.Write($"Rest-site options rebuild: skip={__state} (atRestedFire={RouteState.IsAtRestedFireCheckpoint}).");
         return !__state;
     }
 
@@ -88,7 +89,6 @@ internal static class RestSiteRecoverySkipOptionsPatch
 internal static class RestSiteText
 {
     private const string TitleText = "休息并存档";
-
     public static string Rewrite(LocString locString, string text)
     {
         if (!string.Equals(locString.LocTable, "rest_site_ui", StringComparison.Ordinal))
@@ -124,4 +124,37 @@ internal static class RestSiteHealRawTextPatch
     [HarmonyPostfix]
     private static void Postfix(LocString __instance, ref string __result) =>
         __result = RestSiteText.Rewrite(__instance, __result);
+}
+
+// 冻结排查埋点：火堆房间进入的每一步都留痕（进入开始/结束、UI 建立），
+// 下次冻结时日志能精确定位卡在哪一步之间。
+[HarmonyPatch(typeof(RestSiteRoom), "EnterInternal")]
+internal static class RestSiteEnterTracePatch
+{
+    [HarmonyPrefix]
+    private static void Prefix() => ModLog.Write("Rest-site enter: begin.");
+
+    [HarmonyPostfix]
+    private static void Postfix(ref Task __result)
+    {
+        __result = TraceAsync(__result);
+    }
+
+    private static async Task TraceAsync(Task enterTask)
+    {
+        try { await enterTask; }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Rest-site enter failed: {exception}");
+            throw;
+        }
+        ModLog.Write("Rest-site enter: completed.");
+    }
+}
+
+[HarmonyPatch(typeof(NRestSiteRoom), "_Ready")]
+internal static class RestSiteReadyTracePatch
+{
+    [HarmonyPostfix]
+    private static void Postfix() => ModLog.Write("Rest-site UI ready.");
 }

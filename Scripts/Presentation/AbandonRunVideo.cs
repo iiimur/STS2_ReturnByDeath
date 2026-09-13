@@ -299,6 +299,7 @@ internal static class AbandonRunVideo
 
     private static void StartRejectVideo()
     {
+        IfAchievements.Unlock("otto_reject");
         if (_video is null || !GodotObject.IsInstanceValid(_video))
         {
             ModLog.Write("Reject Otto video could not start because the video player is unavailable.");
@@ -366,6 +367,17 @@ internal static class AbandonRunVideo
 
             // 接受奥托后只设置跨重载授权；奥托本身是战斗临时卡，不进入牌组。
             OttoCardLifecycle.MarkAccepted();
+
+            // 接受即授予“朋友的护符”（加奥托机制的遗物化载体）。必须在存档
+            // 前授予，遗物才会随存档一起经过重载；同时写入检查点，死亡回归
+            // 不消失（与接受状态跨回归一致的口径）。
+            var ottoPlayer = state.Players.FirstOrDefault();
+            if (ottoPlayer is not null && !ottoPlayer.Relics.Any(relic => relic is OttoContract))
+            {
+                var contract = await RelicCmd.Obtain<OttoContract>(ottoPlayer);
+                CheckpointStore.RecordEchidnaRelic(contract, ottoPlayer);
+                ModLog.Write("Accepted Otto; Friend's Talisman relic granted and persisted.");
+            }
 
             // 先标记待清理，再保存当前运行。删牌故意延迟到 LoadRun 完成后，
             // 因为当前界面仍是设置页，在这里执行回血/删牌会导致动画丢失或界面状态卡住。

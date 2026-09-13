@@ -5,21 +5,22 @@ namespace ReturnByDeath;
 /// <summary>
 /// 只在特殊事件中生成的卡牌。它直接使用华丽收场的牌面资源与同一套终结特效，
 /// 但独立定义费用、可用条件、文字和强制击杀效果。
+/// 保留/消耗词条由 CanonicalKeywords 声明、原生描述管线自动渲染
+/// （保留在最前、消耗在最后，带换行）；“击晕”按吹哨的写法用 [gold] 标记。
 /// </summary>
 public sealed class OttoCard : CardModel
 {
     public OttoCard() : base(0, CardType.Skill, CardRarity.Rare, TargetType.AllEnemies, false) { }
 
     public override IEnumerable<CardKeyword> CanonicalKeywords =>
-        IsUpgraded
-            ? new[] { CardKeyword.Retain, CardKeyword.Exhaust }
-            : new[] { CardKeyword.Exhaust };
+        new[] { CardKeyword.Retain, CardKeyword.Exhaust };
 
     protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)
     {
-        // 本回合获得6力量：复用原版 Flex 药水的临时力量能力（回合结束自动移除）。
+        // 本回合获得力量（升级后 10）：复用原版 Flex 药水的临时力量能力
+        // （回合结束自动移除）。
         if (Owner?.Creature is { } owner)
-            await PowerCmd.Apply<FlexPotionPower>(choiceContext, owner, 6m, owner, null);
+            await PowerCmd.Apply<FlexPotionPower>(choiceContext, owner, IsUpgraded ? 10m : 6m, owner, null);
 
         // 击晕所有敌人。
         var enemies = CombatState?.Enemies.Where(enemy => enemy.IsAlive).ToList()
@@ -98,7 +99,11 @@ internal static class OttoCardLifecycle
         return Interlocked.CompareExchange(ref _addedThisCombat, 1, 0) == 0;
     }
 
-    public static void MarkAccepted() => OttoAcceptanceState.Mark();
+    public static void MarkAccepted()
+    {
+        OttoAcceptanceState.Mark();
+        IfAchievements.Unlock("otto_accept");
+    }
 
     public static async Task AddToFirstHandAsync(Player player)
     {
@@ -124,11 +129,13 @@ internal static class OttoCardLifecycle
 [HarmonyPatch(typeof(CardModel), nameof(CardModel.Description), MethodType.Getter)]
 internal static class OttoDescriptionPatch
 {
+    // 词条走本 mod 注入的 "cards" 表：{IfUpgraded:show:10|6} 由原生管线
+    // 处理升级差异；“保留/消耗”词条块由 CanonicalKeywords 自动渲染。
     [HarmonyPostfix]
     private static void Postfix(CardModel __instance, ref LocString __result)
     {
         if (__instance is OttoCard)
-            __result = ModelDb.Card<ThinkingAhead>().Description;
+            __result = new LocString("cards", "RBD_OTTO.description");
     }
 }
 
@@ -223,25 +230,6 @@ internal static class OttoLibraryVisibilityPatch
     {
         if (__instance is OttoCard)
             __result = false;
-    }
-}
-
-[HarmonyPatch]
-internal static class OttoDescriptionRenderPatch
-{
-    private static IEnumerable<MethodBase> TargetMethods() =>
-        AccessTools.GetDeclaredMethods(typeof(CardModel)).Where(method =>
-            method.Name is "GetDescriptionForPile" or "GetDescriptionForUpgradePreview");
-
-    [HarmonyPostfix]
-    private static void Postfix(CardModel __instance, ref string __result)
-    {
-        if (__instance is not OttoCard)
-            return;
-
-        __result = __instance.IsUpgraded
-            ? "保留。本回合获得6力量，击晕所有敌人。消耗。"
-            : "本回合获得6力量，击晕所有敌人。消耗。";
     }
 }
 

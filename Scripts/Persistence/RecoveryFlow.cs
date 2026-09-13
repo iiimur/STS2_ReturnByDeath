@@ -338,6 +338,7 @@ internal static class NewRunPatch
         EchidnaVisitState.ResetForNewRun();
         GreedIfState.ResetForNewRun();
         GreedFinaleState.Reset();
+        TombstoneEntry.Act2AncientState.ResetForNewRun();
         RecoveryMarker.Clear();
         // Encounter journal data belongs to one run. Never let a prior run's
         // coordinates affect the first rooms of a new run.

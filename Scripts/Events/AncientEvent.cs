@@ -106,6 +106,10 @@ internal static class AncientEventDonePatch
 
             await SaveManager.Instance.SaveRun(state.CurrentRoom, true);
             ModLog.Write($"Ancient completion persisted to native save: hp={state.Players.FirstOrDefault()?.Creature.CurrentHp}/{state.Players.FirstOrDefault()?.Creature.MaxHp}.");
+
+            // 二层先古之民完成并存档：墓碑按钮的大前提达成。
+            if (state.CurrentActIndex == 1)
+                TombstoneEntry.Act2AncientState.MarkDone();
         }
         catch (Exception exception)
         {

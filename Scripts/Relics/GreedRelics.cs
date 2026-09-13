@@ -5,7 +5,7 @@
 // - 未来的骨骸（套用涅奥的骨骸）：战斗开始时获得 1 层易伤。
 // - 强欲之心（套用白银熔炉）：不再愧疚；每次死亡回归后生命/生命上限各 +2。
 //   效果实现在 CheckpointStore.ApplyRecoveryState（回归流程），遗物本身是被动的。
-// - 奥托的契约（套用拆信刀）：每场战斗第一回合将临时“奥托”加入手牌。
+// - 朋友的护符（套用涅奥的护符）：每场战斗第一回合将临时“奥托”加入手牌。
 // - 怠惰之心（套用捕梦网）：获得即进入「怠惰」IF 线（RouteState.EnterSlothRoute）。
 // 名称与描述走原生 "relics" 本地化表，在语言表每次加载后注入词条。
 
@@ -97,16 +97,17 @@ public sealed class HeartOfGreed : RelicModel
     protected override string IconBaseName => "silver_crucible";
 }
 
-// 奥托的契约：把“接受奥托后每场战斗第一回合手牌里出现临时奥托”的机制
-// 遗物化（贴图套用拆信刀 LetterOpener，呼应契约主题）。实现完全照抄原生
-// 璀璨珍珠（RadiantPearl）：重写 BeforeHandDraw，第 1 回合把生成的
-// OttoCard 塞进手牌。与接受奥托的注入路径共用 OttoCardLifecycle 的每场
-// 战斗一次计数，两者同时存在也不会叠出两张奥托。
+// 朋友的护符（模型 ID 仍为 OTTO_CONTRACT）：把“接受奥托后每场战斗第一
+// 回合手牌里出现临时奥托”的机制遗物化（贴图套用涅奥的护符）。实现完全
+// 照抄原生璀璨珍珠（RadiantPearl，即发光珍珠）：重写 BeforeHandDraw，第 1
+// 回合把生成的 OttoCard 塞进手牌，悬浮时显示奥托卡面。与接受奥托的注入
+// 路径共用 OttoCardLifecycle 的每场战斗一次计数，两者同时存在也不会叠出
+// 两张奥托。
 public sealed class OttoContract : RelicModel
 {
     public override RelicRarity Rarity => RelicRarity.Ancient;
 
-    protected override string IconBaseName => "letter_opener";
+    protected override string IconBaseName => "neows_talisman";
 
     protected override IEnumerable<IHoverTip> ExtraHoverTips =>
         HoverTipFactory.FromCardWithCardHoverTips<OttoCard>();
@@ -175,8 +176,8 @@ internal static class GreedRelicText
         ["HEART_OF_GREED.description"] = "不再愧疚。每次死亡回归生命上限加[blue]2[/blue]。",
         ["HEART_OF_GREED.flavor"] = "想要的，从来都不只是活下去。",
 
-        ["OTTO_CONTRACT.title"] = "奥托的契约",
-        ["OTTO_CONTRACT.description"] = "每场战斗的第[blue]1[/blue]回合开始时，将[blue]1[/blue]张临时[gold]奥托[/gold]加入手牌。",
+        ["OTTO_CONTRACT.title"] = "朋友的护符",
+        ["OTTO_CONTRACT.description"] = "在每场战斗开始时，将[blue]1[/blue]张[gold]奥托[/gold]加入你的手牌。",
         ["OTTO_CONTRACT.flavor"] = "签名处永远空着——他从不催促，只等你开口。",
 
         ["HEART_OF_SLOTH.title"] = "怠惰之心",
@@ -227,6 +228,13 @@ internal static class GreedRelicText
             "花没有枯萎。它只是，沉默了。",
     };
 
+    // 奥托卡（朋友的护符给的临时牌）的描述：{IfUpgraded:show:10|6} 处理升级
+    // 力量差异；“保留/消耗”词条块由卡牌的 CanonicalKeywords 自动渲染。
+    private static readonly Dictionary<string, string> CardEntries = new()
+    {
+        ["RBD_OTTO.description"] = "本回合获得{IfUpgraded:show:10|6}点[gold]力量[/gold]。\n[gold]击晕[/gold]所有敌人。",
+    };
+
     // 注意：SetLanguageInternal 首次发生在 LocManager 构造函数内部，
     // 此时静态 Instance 还没赋值，必须用 Harmony 传入的实例，不能用单例。
     public static void Inject(LocManager? manager = null)
@@ -236,6 +244,7 @@ internal static class GreedRelicText
             manager ??= LocManager.Instance;
             manager?.GetTable(Table).MergeWith(Entries);
             manager?.GetTable("events").MergeWith(EventEntries);
+            manager?.GetTable("cards").MergeWith(CardEntries);
         }
         catch (Exception exception)
         {

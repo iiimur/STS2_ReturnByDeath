@@ -21,9 +21,12 @@ internal sealed class EncounterRecord
     // 同一遭遇历史上“战斗前生命 - 战斗后生命”的最大净损失。
     // 正数代表扣血，负数代表这场战斗最终回血更多。
     public int? MaximumHpLoss { get; set; }
-    // 最近一次完成该遭遇的净损失（每次打完直接覆盖）。代理模式的扣血规则
-    // 与遭遇预告的显示都优先使用该值，没有时退回历史最大净损失。
+    // 最近一次完成该日志遭遇的净损失（每次打完直接覆盖）。
+    // 现在代理重放直接读取遭遇预告的同一条记忆；该值仅用于旧数据兼容与诊断。
     public int? LatestHpLoss { get; set; }
+    // 只有真正进入过 OfferRoomEndRewards 的战斗才能代理。可空以兼容旧日志；
+    // 旧记录可由已存在的生命统计推断为已胜利。
+    public bool? Completed { get; set; }
 }
 
 internal sealed class EncounterMonsterRecord
@@ -37,8 +40,8 @@ internal sealed class EncounterMonsterRecord
 internal static class EncounterJournalStore
 {
     public static bool ReplayActive => Volatile.Read(ref _replayActive) != 0;
-    // 回归重放时，最后一条遭遇记录代表死亡前尚未完成的最后一场战斗；
-    // 它之前的记录都已经在上一条时间线打过，可以直接进入原生结算。
+    // 兼容旧调用：只有已经实际进入过原生奖励结算、并且能与当前
+    // 遭遇预告序号对应上的战斗，才允许代理跳过。
     public static bool ShouldSkipCurrentEncounter =>
         ReplayActive && Volatile.Read(ref _currentEncounterShouldSkip) != 0;
     private static readonly object Sync = new();
@@ -75,31 +78,7 @@ internal static class EncounterJournalStore
         lock (Sync)
         {
             EnsureLoaded();
-            var latest = _file!.Encounters.LastOrDefault(record =>
-                record.Act == state.CurrentActIndex && IsMonsterRoomType(record.RoomType));
-            if (latest is null)
-                return false;
-
-            EncounterRecord? current = null;
-            if (state.CurrentMapCoord is { } coord)
-            {
-                var mapKey = Key(state.CurrentActIndex, coord);
-                current = _file.Encounters.FirstOrDefault(record =>
-                    record.Act == state.CurrentActIndex &&
-                    string.Equals(record.MapKey, mapKey, StringComparison.Ordinal));
-            }
-
-            current ??= _file.Encounters.FirstOrDefault(record =>
-                record.Act == state.CurrentActIndex &&
-                string.Equals(record.EncounterId, encounter.Id.ToString(), StringComparison.Ordinal));
-
-            // 某些版本在 StartCombat 时还没把 CurrentMapCoord 写回 RunState，
-            // 此时回退到生成怪物时已经锁定的当前记录。
-            if (current is null && _currentRecordedEncounter is not null &&
-                string.Equals(_currentRecordedEncounter.EncounterId, encounter.Id.ToString(), StringComparison.Ordinal))
-            {
-                current = _currentRecordedEncounter;
-            }
+            var current = ResolveReplayRecord(state, encounter);
 
             if (current is null)
                 return false;
@@ -108,10 +87,15 @@ internal static class EncounterJournalStore
             // 会反过来。先把当前遭遇绑定到这条记录，避免读取上一场战斗。
             _currentRecordedEncounter = current;
 
-            var skip = !ReferenceEquals(current, latest);
+            var previewHpLoss = 0;
+            var hasPreview = TryGetPreviewHpLoss(current, out previewHpLoss);
+            var completed = IsCompletedEncounter(current) ||
+                            HasCompletedPreviewEncounter(current);
+            var skip = completed && hasPreview;
             ModLog.Write($"Encounter replay decision: act={state.CurrentActIndex}, " +
                 $"encounter={encounter.Id}, currentMap={state.CurrentMapCoord?.ToString() ?? "none"}, " +
-                $"skip={skip}, latest={latest.EncounterId}.");
+                $"skip={skip}, completed={completed}, " +
+                $"previewHpLoss={(hasPreview ? previewHpLoss.ToString() : "none")}.");
             return skip;
         }
     }
@@ -136,24 +120,29 @@ internal static class EncounterJournalStore
         {
             EnsureLoaded();
             var encounterId = encounter.Id.ToString();
-            EncounterRecord? current = null;
-            // 同一种怪物可能在同一层出现多次；地图坐标优先于 EncounterId，
-            // 否则会把上一格同名遭遇的生命历史套到当前格。
-            if (state.CurrentMapCoord is { } coord)
-            {
-                var mapKey = Key(state.CurrentActIndex, coord);
-                current = _file!.Encounters.FirstOrDefault(record =>
-                    record.Act == state.CurrentActIndex &&
-                    string.Equals(record.MapKey, mapKey, StringComparison.Ordinal));
-            }
+            // StartCombat 前缀早于 GenerateMonstersWithSlots；此时 CurrentMapCoord
+            // 可能已指向新节点，但坐标上保留的旧记录仍是另一场遭遇。
+            // 回归期间必须先按实际 EncounterId/序号锁定，不能用坐标把
+            // 相邻记录锁成同一个对象。
+            var current = ReplayActive
+                ? ResolveReplayRecord(state, encounter)
+                : ResolveRecordedEncounter(state, encounterId);
 
-            current ??= _currentRecordedEncounter is { } recorded &&
-                recorded.Act == state.CurrentActIndex &&
-                string.Equals(recorded.EncounterId, encounterId, StringComparison.Ordinal)
-                ? recorded
-                : _file!.Encounters.LastOrDefault(record =>
-                    record.Act == state.CurrentActIndex &&
-                    string.Equals(record.EncounterId, encounterId, StringComparison.Ordinal));
+            // 第一次时间线中 StartCombat 早于 GenerateMonstersWithSlots；此时
+            // 日志还没有当前遭遇对象。立即创建占位记录，奖励结算才能把
+            // Completed 与生命变化写回这一场，稍后的怪物生成会补齐怪物列表。
+            if (current is null && !ReplayActive && state.CurrentMapCoord is { } coord)
+            {
+                current = new EncounterRecord
+                {
+                    Act = state.CurrentActIndex,
+                    MapKey = Key(state.CurrentActIndex, coord),
+                    EncounterId = encounterId,
+                    RoomType = encounter.RoomType.ToString()
+                };
+                _file!.Encounters.Add(current);
+                Save();
+            }
 
             if (current is null)
                 return;
@@ -205,12 +194,15 @@ internal static class EncounterJournalStore
             if (encounter is null)
                 return 0;
 
+            if (ReplayActive && TryGetPreviewHpLoss(encounter, out var previewHpLoss))
+                return previewHpLoss;
+
             return GetEncounterHpLoss(encounter);
         }
     }
 
-    // 地图点击尚未生成 EncounterModel，因此按 RecordMonsters 将要使用的同一
-    // 坐标/分类游标预读记录。这里只查看，不推进游标；取消弹窗后状态完全不变。
+    // 地图点击尚未生成 EncounterModel，因此按 RecordMonsters 将要使用的
+    // 分类游标预读遭遇预告。这里只查看，不推进游标；取消弹窗后状态完全不变。
     public static bool TryGetUpcomingProxyHpLoss(
         IRunState state,
         MapCoord coord,
@@ -232,29 +224,101 @@ internal static class EncounterJournalStore
                 .Where(record => record.Act == state.CurrentActIndex &&
                                  IsSameCategory(record.RoomType, elite))
                 .ToList();
-            var mapKey = Key(state.CurrentActIndex, coord);
             var cursor = elite ? _replayEliteRecordCursor : _replayNormalRecordCursor;
-            var upcoming = category.FirstOrDefault(record =>
-                               string.Equals(record.MapKey, mapKey, StringComparison.Ordinal))
-                           ?? (cursor < category.Count ? category[cursor] : null);
-            var latest = _file.Encounters.LastOrDefault(record =>
-                record.Act == state.CurrentActIndex && IsMonsterRoomType(record.RoomType));
-
-            // 与 ShouldSkipEncounter 保持完全相同的边界：死亡前最后一场尚未
-            // 完成的遭遇不能代理，也不应弹出代理致死警告。
-            if (upcoming is null || latest is null || ReferenceEquals(upcoming, latest))
+            if (cursor >= category.Count ||
+                !(IsCompletedEncounter(category[cursor]) ||
+                  AmnesiaState.HasCompletedPreviewEncounter(
+                      state.CurrentActIndex, elite, cursor + 1)) ||
+                !AmnesiaState.TryGetPreviewEncounterHpLoss(
+                    state.CurrentActIndex, elite, cursor + 1, out hpLoss))
                 return false;
 
-            hpLoss = GetEncounterHpLoss(upcoming);
             return true;
         }
+    }
+
+    // 代理与预告共用同一个“层 + 类别 + 序号”。遭遇日志仅用于
+    // 确定当前是序列中的第几项，血量变化直接从记忆面板的合并记录读取。
+    private static bool TryGetPreviewHpLoss(EncounterRecord encounter, out int hpLoss)
+    {
+        hpLoss = 0;
+        if (!TryGetPreviewSequence(encounter, out var elite, out var sequenceIndex))
+            return false;
+
+        return AmnesiaState.TryGetPreviewEncounterHpLoss(
+            encounter.Act, elite, sequenceIndex, out hpLoss);
+    }
+
+    private static bool HasCompletedPreviewEncounter(EncounterRecord encounter) =>
+        TryGetPreviewSequence(encounter, out var elite, out var sequenceIndex) &&
+        AmnesiaState.HasCompletedPreviewEncounter(
+            encounter.Act, elite, sequenceIndex);
+
+    private static bool TryGetPreviewSequence(
+        EncounterRecord encounter,
+        out bool elite,
+        out int sequenceIndex)
+    {
+        elite = false;
+        sequenceIndex = 0;
+        if (!Enum.TryParse<RoomType>(encounter.RoomType, out var roomType) ||
+            roomType is not (RoomType.Monster or RoomType.Elite))
+            return false;
+
+        elite = roomType == RoomType.Elite;
+        var isElite = elite;
+        var category = _file!.Encounters
+            .Where(record => record.Act == encounter.Act && IsSameCategory(record.RoomType, isElite))
+            .ToList();
+        sequenceIndex = category.IndexOf(encounter) + 1;
+        return sequenceIndex > 0;
+    }
+
+    private static EncounterRecord? ResolveReplayRecord(IRunState state, EncounterModel encounter)
+    {
+        var elite = encounter.RoomType == RoomType.Elite;
+        var encounterId = encounter.Id.ToString();
+        if (_currentRecordedEncounter is { } recorded &&
+            _seenJournalModels.Contains(RuntimeHelpers.GetHashCode(encounter)) &&
+            recorded.Act == state.CurrentActIndex &&
+            IsSameCategory(recorded.RoomType, elite) &&
+            string.Equals(recorded.EncounterId, encounterId, StringComparison.Ordinal))
+        {
+            return recorded;
+        }
+
+        var category = _file!.Encounters
+            .Where(record => record.Act == state.CurrentActIndex && IsSameCategory(record.RoomType, elite))
+            .ToList();
+        var cursor = elite ? _replayEliteRecordCursor : _replayNormalRecordCursor;
+        return category.Skip(Math.Min(cursor, category.Count)).FirstOrDefault(record =>
+                   string.Equals(record.EncounterId, encounterId, StringComparison.Ordinal))
+               ?? category.FirstOrDefault(record =>
+                   string.Equals(record.EncounterId, encounterId, StringComparison.Ordinal));
+    }
+
+    private static EncounterRecord? ResolveRecordedEncounter(IRunState state, string encounterId)
+    {
+        if (state.CurrentMapCoord is { } coord)
+        {
+            var mapKey = Key(state.CurrentActIndex, coord);
+            var byCoordinate = _file!.Encounters.FirstOrDefault(record =>
+                record.Act == state.CurrentActIndex &&
+                string.Equals(record.MapKey, mapKey, StringComparison.Ordinal) &&
+                string.Equals(record.EncounterId, encounterId, StringComparison.Ordinal));
+            if (byCoordinate is not null)
+                return byCoordinate;
+        }
+
+        return _file!.Encounters.LastOrDefault(record =>
+            record.Act == state.CurrentActIndex &&
+            string.Equals(record.EncounterId, encounterId, StringComparison.Ordinal));
     }
 
     private static int GetEncounterHpLoss(EncounterRecord encounter)
     {
 
-        // 扣血最新规则：优先取最近一次完成该遭遇的净损失。旧日志没有
-        // 最新值时退回最大净损失、记忆面板原生统计，最后是最小伤害修复值。
+        // 旧日志兼容回退：优先取最近一次净损失，再退回历史统计。
         if (encounter.LatestHpLoss.HasValue)
             return encounter.LatestHpLoss.Value;
 
@@ -270,6 +334,13 @@ internal static class EncounterJournalStore
          .Select(value => value!.Value)
          .Max();
     }
+
+    private static bool IsCompletedEncounter(EncounterRecord encounter) =>
+        encounter.Completed == true ||
+        // 1.0.8 及更早版本没有 Completed；正常结算过的旧战斗会留下
+        // 至少一项生命统计，借此无需重打便可继续代理。
+        encounter.LatestHpLoss.HasValue || encounter.MinimumDamageTaken.HasValue ||
+        encounter.MaximumHpLoss.HasValue;
 
     public static void RecordCurrentEncounterDamage()
     {
@@ -292,6 +363,11 @@ internal static class EncounterJournalStore
                 return;
 
             var changed = false;
+            if (_currentCombatEncounter.Completed != true)
+            {
+                _currentCombatEncounter.Completed = true;
+                changed = true;
+            }
             if (!_currentCombatEncounter.MinimumDamageTaken.HasValue ||
                 damageTaken < _currentCombatEncounter.MinimumDamageTaken.Value)
             {
@@ -576,10 +652,20 @@ internal static class EncounterJournalStore
                     .Where(x => x.Act == state.CurrentActIndex && IsSameCategory(x.RoomType, elite))
                     .ToList();
                 var cursor = elite ? _replayEliteRecordCursor++ : _replayNormalRecordCursor++;
-                _currentRecordedEncounter = (!string.IsNullOrEmpty(mapKey)
-                        ? category.FirstOrDefault(x => x.Act == state.CurrentActIndex && x.MapKey == mapKey)
-                        : null)
-                    ?? (cursor < category.Count ? category[cursor] : null)
+                // 回归后地图可能走不同路线，CurrentMapCoord 与历史 MapKey
+                // 不再一一对应。先用当前类别序号 + EncounterId 选中历史记录；
+                // 若用坐标优先，StartCombat 后的生成流程会把相邻遭遇的
+                // EncounterId 和血量记录相互覆盖。
+                var encounterId = encounter.Id.ToString();
+                var expected = cursor < category.Count ? category[cursor] : null;
+                var matching = expected is not null &&
+                               string.Equals(expected.EncounterId, encounterId, StringComparison.Ordinal)
+                    ? expected
+                    : category.Skip(Math.Min(cursor, category.Count)).FirstOrDefault(record =>
+                          string.Equals(record.EncounterId, encounterId, StringComparison.Ordinal))
+                      ?? category.FirstOrDefault(record =>
+                          string.Equals(record.EncounterId, encounterId, StringComparison.Ordinal));
+                _currentRecordedEncounter = matching
                     ?? new EncounterRecord { Act = state.CurrentActIndex, MapKey = mapKey };
                 if (!_file.Encounters.Contains(_currentRecordedEncounter))
                     _file.Encounters.Add(_currentRecordedEncounter);
@@ -605,12 +691,12 @@ internal static class EncounterJournalStore
 
             if (ReplayActive)
             {
-                var latestEncounter = _file!.Encounters.LastOrDefault(record =>
-                    record.Act == state.CurrentActIndex &&
-                    IsMonsterRoomType(record.RoomType));
+                var canSkip = (IsCompletedEncounter(_currentRecordedEncounter) ||
+                               HasCompletedPreviewEncounter(_currentRecordedEncounter)) &&
+                              TryGetPreviewHpLoss(_currentRecordedEncounter, out _);
                 Volatile.Write(
                     ref _currentEncounterShouldSkip,
-                    ReferenceEquals(_currentRecordedEncounter, latestEncounter) ? 0 : 1);
+                    canSkip ? 1 : 0);
             }
             else
             {

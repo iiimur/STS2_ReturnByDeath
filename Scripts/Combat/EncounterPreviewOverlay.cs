@@ -59,9 +59,27 @@ internal static class EncounterPreviewOverlay
         if (_container is null || !GodotObject.IsInstanceValid(_container))
             return;
         _container.Visible = false;
+        ClearRowHoverTips();
         PreviewRowsBySequence.Clear();
         foreach (var child in _container.GetChildren().ToArray())
             child.QueueFree();
+    }
+
+    // 清掉所有预告行仍挂着的悬浮提示与高亮。悬浮地图节点点击出发时
+    // MouseExited 不会触发（节点被直接切走），残留的悬浮提示会跟随随后
+    // 被释放的预告行并逐帧更新，导致主线程冻结（进火堆卡死的根因）。
+    public static void ClearRowHoverTips()
+    {
+        foreach (var rows in PreviewRowsBySequence.Values)
+        {
+            foreach (var row in rows)
+            {
+                if (!GodotObject.IsInstanceValid(row))
+                    continue;
+                try { row.Unhighlight(); } catch { }
+                InvokeRowHoverTip(row, focused: false);
+            }
+        }
     }
 
     public static void Refresh()
@@ -83,6 +101,7 @@ internal static class EncounterPreviewOverlay
         if (_container is null || !GodotObject.IsInstanceValid(_container) || _container.GetParent() != run)
             _container = CreateContainer(run);
         if (_container is null) return;
+        ClearRowHoverTips();
         foreach (var child in _container.GetChildren().ToArray())
             child.QueueFree();
         PreviewRowsBySequence.Clear();
@@ -324,6 +343,7 @@ internal static class EncounterPreviewOverlay
             ? GetEntryCategories(visitedEntry)
             : GetPointCategories(point.Point.PointType);
 
+        var firstRowShown = false;
         foreach (var category in categories)
         {
             var seqIdx = ResolveSequenceIndex(state, history, point.Point, category, visited);
@@ -339,8 +359,38 @@ internal static class EncounterPreviewOverlay
                 if (highlighted)
                     previewRow.Highlight();
                 else
+                {
                     previewRow.Unhighlight();
+                    // 移除本行可能挂着的悬浮提示（幂等）。
+                    InvokeRowHoverTip(previewRow, false);
+                }
             }
+
+            // 详细信息：与直接把鼠标放到预告行上完全一致——调用该行自己的
+            // OnFocus，由原版创建地图点历史悬浮提示（含遭遇详细内容）。
+            // 多行同时匹配时只显示第一行的提示，避免互相叠盖。
+            if (highlighted && !firstRowShown)
+            {
+                var firstRow = rows.FirstOrDefault(row => GodotObject.IsInstanceValid(row));
+                if (firstRow is not null)
+                {
+                    InvokeRowHoverTip(firstRow, true);
+                    firstRowShown = true;
+                }
+            }
+        }
+    }
+
+    private static void InvokeRowHoverTip(NMapPointHistoryEntry row, bool focused)
+    {
+        try
+        {
+            AccessTools.Method(typeof(NMapPointHistoryEntry), focused ? "OnFocus" : "OnUnfocus")
+                ?.Invoke(row, null);
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Preview row hover tip failed: {exception.Message}");
         }
     }
 
@@ -432,6 +482,15 @@ internal static class PreviewHoverTipLayerPatchGeneral
     {
         PreviewHoverTipLayer.RaiseAbovePreview(__result);
     }
+}
+
+// 出发前往新地图点时强制清理预告行残留的悬浮提示（见 ClearRowHoverTips
+// 的注释：悬浮中直接点击节点，MouseExited 不会触发）。
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.EnterMapCoord))]
+internal static class PreviewRowTipTravelCleanupPatch
+{
+    [HarmonyPrefix]
+    private static void Prefix() => EncounterPreviewOverlay.ClearRowHoverTips();
 }
 
 internal static class PreviewHoverTipLayer

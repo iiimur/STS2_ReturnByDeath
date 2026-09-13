@@ -192,6 +192,7 @@ internal static class RemEventState
 
     private static void MarkRewardBranchChosen()
     {
+        IfAchievements.Unlock("rem_reward");
         lock (Sync)
         {
             var file = EnsureLoaded();

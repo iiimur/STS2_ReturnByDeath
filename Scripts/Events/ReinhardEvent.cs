@@ -74,6 +74,7 @@ internal static class ReinhardEventState
         Interlocked.Exchange(ref _triggeredThisCombat, 1);
         Interlocked.Exchange(ref _conversionPending, 1);
         Volatile.Write(ref _endTurnIntercepted, 1);
+        IfAchievements.Unlock("reinhard_rescue");
         ModLog.Write("Reinhard event triggered before enemy turn: lethal intent predicted.");
         // 先播放事件专属音效，再进入莱茵哈鲁特的生成与自动出牌流程。
         // 音效失败不影响事件本身，避免素材读取问题阻断保命逻辑。

@@ -224,8 +224,9 @@ internal static class ProxyCombatPreTurnSettlementPatch
     }
 }
 
-// 记录每场正常完成的遭遇实际净生命变化（含最新一次），代理模式取同一遭遇最近一次的净损失。
-// 预完成战斗（怠惰/代理）不会写入新的 0 伤害，避免覆盖真实历史。
+// 记录每场正常完成的遭遇实际净生命变化，供下一次死亡时写入记忆。
+// 代理重放从当前遭遇预告的合并记忆取值；预完成战斗（怠惰/代理）
+// 不会写入新的 0 伤害，避免覆盖真实历史。
 [HarmonyPatch(typeof(CombatRoom), nameof(CombatRoom.OfferRoomEndRewards))]
 internal static class EncounterDamageHistoryPatch
 {

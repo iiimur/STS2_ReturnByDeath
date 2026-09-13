@@ -30,12 +30,12 @@ internal static class ProxyModeToggle
                 return;
 
             var state = RunManager.Instance?.DebugOnlyGetState();
-            // 展示条件：死亡回归重放中，且死掉的那条命胜利过至少一场战斗
-            // （胜利在前、死亡回归在后）。回归落地即展示，不要求在新时间线
-            // 里再赢一场。
+            // 展示条件：死亡回归重放中，且本局任意一条已经记录的生命
+            // 胜利过至少一场战斗。代理资格一旦解锁就持续保留；不能因为
+            // 后续某条命在第一场战斗中死亡而把按钮重新隐藏。
             var shouldShow = EncounterJournalStore.ReplayActive &&
                 state is not null &&
-                AmnesiaState.LastLifeWonABattle();
+                AmnesiaState.HasWonABattleInAnyRecordedLife();
 
             if (_checkButton is not null && GodotObject.IsInstanceValid(_checkButton))
             {

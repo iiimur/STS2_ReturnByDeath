@@ -282,6 +282,38 @@ internal static class AmnesiaState
         }
     }
 
+    // 代理模式是本局累计解锁：只要任意一条已经结束的生命曾经完成过战斗，
+    // 后续回归都继续显示开关。每条死亡记录的最后一个节点是死亡所在的未完成
+    // 节点，因此逐条忽略最后一项，再查找普通/精英/Boss 战斗。
+    public static bool HasWonABattleInAnyRecordedLife()
+    {
+        lock (Sync)
+        {
+            var file = EnsureLoaded();
+            if (file.Episodes.Count == 0)
+            {
+                if (file.HistoryEntries.Count == 0)
+                    return false;
+
+                return HasCompletedBattleBeforeDeath(
+                    file.HistoryEntries.SelectMany(act => act));
+            }
+
+            return file.Episodes.Any(episode =>
+                HasCompletedBattleBeforeDeath(
+                    episode.HistoryEntries.SelectMany(act => act)));
+        }
+    }
+
+    private static bool HasCompletedBattleBeforeDeath(
+        IEnumerable<MapPointHistoryEntry> historyEntries)
+    {
+        var entries = historyEntries.ToList();
+        return entries.Take(Math.Max(0, entries.Count - 1)).Any(entry =>
+            entry.Rooms.Any(room =>
+                room.RoomType is RoomType.Monster or RoomType.Elite or RoomType.Boss));
+    }
+
     public static MemoryEpisodeView? GetEpisode(int index)
     {
         lock (Sync)
@@ -445,6 +477,118 @@ internal static class AmnesiaState
 
             return found ? best : null;
         }
+    }
+
+    // 遭遇预告的合并身份是“层 + 普通/精英序号”：每条时间线
+    // 分别计数，同序号以最新记忆覆盖旧记忆。代理必须读取这个方法，
+    // 而不是另一份按 EncounterId 聚合的统计，否则显示与扣血会错位。
+    public static bool TryGetPreviewEncounterHpLoss(
+        int act,
+        bool elite,
+        int sequenceIndex,
+        out int hpLoss)
+    {
+        hpLoss = 0;
+        if (act < 0 || sequenceIndex <= 0)
+            return false;
+
+        lock (Sync)
+        {
+            var found = false;
+            foreach (var episode in EnsureLoaded().Episodes)
+            {
+                if (act >= episode.HistoryEntries.Count)
+                    continue;
+
+                var currentSequence = 0;
+                foreach (var entry in episode.HistoryEntries[act])
+                {
+                    var belongsToCategory = elite
+                        ? entry.MapPointType == MapPointType.Elite ||
+                          entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Elite)
+                        : entry.MapPointType == MapPointType.Monster ||
+                          entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Monster);
+                    if (!belongsToCategory || ++currentSequence != sequenceIndex)
+                        continue;
+
+                    var stats = entry.PlayerStats.FirstOrDefault();
+                    if (stats is null)
+                        break;
+
+                    var damageValue = AccessTools.Property(stats.GetType(), "DamageTaken")?.GetValue(stats)
+                                      ?? AccessTools.Field(stats.GetType(), "DamageTaken")?.GetValue(stats);
+                    var healedValue = AccessTools.Property(stats.GetType(), "HpHealed")?.GetValue(stats)
+                                      ?? AccessTools.Field(stats.GetType(), "HpHealed")?.GetValue(stats);
+                    hpLoss = Convert.ToInt32(damageValue ?? 0) - Convert.ToInt32(healedValue ?? 0);
+                    found = true;
+                    break;
+                }
+            }
+
+            return found;
+        }
+    }
+
+    // 判断预告中的某个“层 + 普通/精英序号”是否曾经真正完成过。
+    // 每条死亡记忆的全局最后一个节点是死亡所在的未完成节点；同一序号
+    // 只要在任意一条生命中不是最后节点，就说明它至少被打赢过一次。
+    public static bool HasCompletedPreviewEncounter(
+        int act,
+        bool elite,
+        int sequenceIndex)
+    {
+        if (act < 0 || sequenceIndex <= 0)
+            return false;
+
+        lock (Sync)
+        {
+            var file = EnsureLoaded();
+            if (file.Episodes.Count == 0)
+                return HasCompletedEncounterInHistory(
+                    file.HistoryEntries, act, elite, sequenceIndex);
+
+            return file.Episodes.Any(episode =>
+                HasCompletedEncounterInHistory(
+                    episode.HistoryEntries, act, elite, sequenceIndex));
+        }
+    }
+
+    private static bool HasCompletedEncounterInHistory(
+        IReadOnlyList<List<MapPointHistoryEntry>> history,
+        int act,
+        bool elite,
+        int sequenceIndex)
+    {
+        if (act >= history.Count)
+            return false;
+
+        var lastAct = -1;
+        var lastEntryIndex = -1;
+        for (var actIndex = history.Count - 1; actIndex >= 0; actIndex--)
+        {
+            if (history[actIndex].Count == 0)
+                continue;
+            lastAct = actIndex;
+            lastEntryIndex = history[actIndex].Count - 1;
+            break;
+        }
+
+        var currentSequence = 0;
+        for (var entryIndex = 0; entryIndex < history[act].Count; entryIndex++)
+        {
+            var entry = history[act][entryIndex];
+            var belongsToCategory = elite
+                ? entry.MapPointType == MapPointType.Elite ||
+                  entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Elite)
+                : entry.MapPointType == MapPointType.Monster ||
+                  entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Monster);
+            if (!belongsToCategory || ++currentSequence != sequenceIndex)
+                continue;
+
+            return act != lastAct || entryIndex != lastEntryIndex;
+        }
+
+        return false;
     }
 
     // 失忆回归时保存“存档前”的作战记录（检查点里的逐层地图历史）与层名，

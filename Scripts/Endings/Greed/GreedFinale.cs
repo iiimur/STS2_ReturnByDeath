@@ -36,7 +36,18 @@ internal static class GreedFinaleState
     // 让 NGameOverScreen 把当前房间判定为胜利房（与建筑师事件房同款待遇）。
     public static bool PresentingVictory => Volatile.Read(ref _presentingVictory) != 0;
 
-    public static void MarkPresentingVictory() => Volatile.Write(ref _presentingVictory, 1);
+    public static void MarkPresentingVictory()
+    {
+        Volatile.Write(ref _presentingVictory, 1);
+        IfAchievements.Unlock("greed_ending");
+    }
+
+    // 进入胜利结算时播放的终局音频（类似怠惰结局的死亡结算音效）。
+    public static void PlayFinaleAudio()
+    {
+        if (!CosmeticAudio.TryPlay("强欲结局用.wav"))
+            ModLog.Write("Greed finale audio could not start: 强欲结局用.wav");
+    }
 
     public static void Reset()
     {
@@ -106,13 +117,26 @@ internal static class GreedVictoryRoomPatch
 // 触发点一：第三层的第二次死亡。在死亡结算入口把 isVictory 翻转为 true，
 // 原版按胜利完成存档与历史记录（与建筑师击杀的结算路径一致），
 // 回归流程因 isVictory=true 自然跳过。
+// 终局已触发（PresentingVictory）后的任何 OnEnded(false) 都来自 WinRun
+// 的收尾击杀：一律翻转为胜利，防止死亡回归把胜利结算顶掉。
+// High 优先级保证本前缀先于恢复流程的 OnEnded 前缀执行。
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.OnEnded), new[] { typeof(bool) })]
 internal static class GreedFinaleDeathPatch
 {
     [HarmonyPrefix]
+    [HarmonyPriority(Priority.High)]
     private static void Prefix(RunManager __instance, ref bool isVictory)
     {
-        if (isVictory || !GreedRoute.IsActive)
+        if (isVictory)
+            return;
+
+        if (GreedFinaleState.PresentingVictory)
+        {
+            isVictory = true;
+            return;
+        }
+
+        if (!GreedRoute.IsActive)
             return;
 
         var state = __instance.DebugOnlyGetState();
@@ -125,6 +149,7 @@ internal static class GreedFinaleDeathPatch
         if (GreedFinaleState.ShouldConvertDeathToVictory(CheckpointStore.GetRunKey(checkpoint)))
         {
             isVictory = true;
+            GreedFinaleState.PlayFinaleAudio();
             ModLog.Write("Greed finale: second act-3 death converted into the victory settlement.");
         }
     }
@@ -154,6 +179,7 @@ internal static class GreedFinaleTreasurePatch
 
         Volatile.Write(ref _started, 1);
         GreedFinaleState.MarkPresentingVictory();
+        GreedFinaleState.PlayFinaleAudio();
         TaskHelper.RunSafely(EnterVictorySettlementAsync());
         ModLog.Write("Greed finale: treasure-room proceed converted into the victory settlement.");
         return false;
