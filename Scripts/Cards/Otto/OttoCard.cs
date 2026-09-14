@@ -10,7 +10,11 @@ namespace ReturnByDeath;
 /// </summary>
 public sealed class OttoCard : CardModel
 {
-    public OttoCard() : base(0, CardType.Skill, CardRarity.Rare, TargetType.AllEnemies, false) { }
+    // 稀有度用 Common 是为了卡面横幅取普通牌的白色（Rare 会渲染成金色，
+    // 与这张牌只在事件中临时出现的气质不符）。奥托不会被任何生成来源产出
+    // （CanBeGeneratedInCombat / CanBeGeneratedByModifiers 已强制为 false），
+    // 因此降低稀有度不会让它进入卡牌奖励或商店池。
+    public OttoCard() : base(0, CardType.Skill, CardRarity.Common, TargetType.AllEnemies, false) { }
 
     public override IEnumerable<CardKeyword> CanonicalKeywords =>
         new[] { CardKeyword.Retain, CardKeyword.Exhaust };

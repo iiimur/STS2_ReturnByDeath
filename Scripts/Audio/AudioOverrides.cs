@@ -187,6 +187,14 @@ internal static class GameOverMusicPatch
             return false;
         }
 
+        // 「愤怒」IF 线的终局：与其它 IF 结局一致，不播放惨叫，也不播放原生
+        // game-over 音效；结局 ED 由 WrathFinaleState 在点击最后一个“继续”后插入。
+        if (ArchitectFinaleState.IsActive && RouteState.IsWrathRoute)
+        {
+            ModLog.Write("Suppressed death audio during the Wrath Architect finale.");
+            return false;
+        }
+
         ModLog.Write($"Intercepted game-over music: {TargetPath}");
         if (CosmeticAudio.TryPlayRandomDeathScream())
         {

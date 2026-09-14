@@ -33,6 +33,7 @@ public static class Entry
         ModHelper.AddModelToPool<FallbackRelicPool, OttoContract>();
         ModHelper.AddModelToPool<FallbackRelicPool, HeartOfSloth>();
         ModHelper.AddModelToPool<FallbackRelicPool, HeartOfPride>();
+        ModHelper.AddModelToPool<FallbackRelicPool, HeartOfWrath>();
 
         // 新遗物的中文词条：若 mod 初始化晚于首次语言表加载，这里补一次注入。
         GreedRelicText.Inject();

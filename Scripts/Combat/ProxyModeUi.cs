@@ -102,8 +102,8 @@ internal static class ProxyModeToggle
 }
 
 // 诅咒预算展示：顶栏计时文字左侧（代理开关更左边）放两个数字——
-// 再次死亡将要叠加的“愧疚 a+1 张”和“受伤 b+(a+1)/3 张”，即按当前预算
-// 先计算（a++、b += a/3）后的结果，玩家无需自己换算。
+// 下一次死亡将要叠加的“愧疚 a 张”和“受伤 b 张”。预算值本身即待施加
+// 数量（见 CheckpointStore.CurseBudget），这里直接读取，无需换算。
 internal static class CurseBudgetDisplay
 {
     private static Label? _label;
@@ -151,8 +151,8 @@ internal static class CurseBudgetDisplay
         if (_label is null || !GodotObject.IsInstanceValid(_label))
             return;
         var (guilt, injury) = CheckpointStore.CurseBudget.Current;
-        // 再次死亡的惩罚：a+1 张愧疚；受伤施加值为累进后的 b += (a+1)/3。
-        _label.Text = $"愧疚 {guilt + 1} 受伤 {injury + (guilt + 1) / 3}";
+        // 预算值即为下一次死亡施加的数量：正常线为（1,0）起步，强欲线清零后为（0,0）。
+        _label.Text = $"愧疚 {guilt} 受伤 {injury}";
     }
 }
 

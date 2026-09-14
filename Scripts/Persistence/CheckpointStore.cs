@@ -75,6 +75,8 @@ internal static class CheckpointStore
     public static async Task ApplyRecoveryState(RunState state, SerializableRun checkpoint)
     {
         var count = Math.Min(state.Players.Count, checkpoint.Players.Count);
+        // 本次死亡是否要推进诅咒预算；强欲线清零后不推进。
+        var advanceBudget = false;
         for (var i = 0; i < count; i++)
         {
             var player = state.Players[i];
@@ -99,33 +101,38 @@ internal static class CheckpointStore
                 // 失忆回归：卡组重置为开局初始状态，且不添加回归诅咒。
                 // 失忆线仍按剧情规则静默重建初始卡组。
                 await ResetDeckToInitialAsync(player);
+                advanceBudget = true;
                 ModLog.Write("Amnesia recovery: deck reset to the initial state; no curse added.");
             }
             else if (holdsHeartOfGreed)
             {
-                // 强欲之心：不再愧疚——愧疚值固定为 0，本次回归不加任何诅咒，
-                // 之前累计的预算也一并清零（之后的死亡不再增长）。
-                CurseBudget.Reset("Heart of Greed recovery");
+                // 强欲之心：不再愧疚——本次回归不加任何诅咒，预算清零并保持
+                // 0（顶栏显示“愧疚 0 受伤 0”，之后的死亡也不再增长）。
+                CurseBudget.ClearToZero("Heart of Greed recovery");
                 ModLog.Write("Heart of Greed recovery: no curse added; HP and max HP increased by 2.");
             }
             else
             {
-                // 诅咒预算：每次死亡叠加施加“愧疚 a 张 + 受伤 b 张”（a/b 为
-                // 当前预算值：a++、b += a/3 后的结果）。继承牌组里已有此前
-                // 回归加入的诅咒，新诅咒直接叠加上去——第 1 次死亡 +1、
-                // 第 2 次 +2、第 3 次 +3+1 受伤……施加数量只由死亡次数
-                // 决定，无法刷改。
+                // 诅咒预算：A/B 直接就是“本次死亡施加的数量”。继承牌组里
+                // 已有此前回归加入的诅咒，新诅咒直接叠加上去——第 1 次死亡
+                // +1、第 2 次 +2、第 3 次 +3+1 受伤……施加数量只由死亡次数
+                // 决定，无法刷改。施加完成后才推进到下一次（见下方）。
                 var (guilties, injuries) = CurseBudget.Current;
                 for (var guilt = 0; guilt < guilties; guilt++)
                     await AddCurseAsync<Guilty>(player, state);
                 for (var inj = 0; inj < injuries; inj++)
                     await AddCurseAsync<Injury>(player, state);
+                advanceBudget = true;
                 ModLog.Write($"Recovery curses applied from the death budget: guilty x{guilties}, injury x{injuries}.");
             }
             // 回归血量使用检查点保存的 CurrentHp（傲慢线已含 +1 加成）。
             player.Creature.SetCurrentHpInternal(savedPlayer.CurrentHp);
             ModLog.Write($"Recovery health restored from checkpoint: {savedPlayer.CurrentHp}/{savedPlayer.MaxHp}.");
         }
+
+        // 先施加诅咒，再把预算推进到下一条时间线。
+        if (advanceBudget)
+            CurseBudget.AdvanceAfterDeath();
 
         if (checkpoint.Players.Any(saved => saved.Relics.Any(relic => relic.Id == HeartOfGreedId)))
         {
@@ -195,11 +202,14 @@ internal static class CheckpointStore
         CopyDeathDeckToCheckpoint(deathState, checkpoint);
         AmnesiaState.CaptureDeathEpisode(checkpoint, deathState);
         // 诅咒预算：先计算后施加。a++、b += a/3；回归时按 a/b 施加诅咒。
-        // 持有强欲之心时愧疚值固定为 0：死亡不再累计预算（回归时也会清零）。
+        // 持有强欲之心时愧疚值固定为 0：死亡不再累计预算（回归时会保持清零）。
+        // 其余情况不在此推进：本次死亡的施加数量已存于预算中，待回归真正
+        // 施加后再推进（见 ApplyRecoveryState 的 AdvanceAfterDeath）。
         if (deathState.Players.Any(player => player.Relics.Any(relic => relic.Id == HeartOfGreedId)))
-            ModLog.Write("Heart of Greed held at death; curse budget growth suppressed.");
-        else
-            CurseBudget.OnDeath();
+        {
+            CurseBudget.ClearToZero("Heart of Greed held at death");
+            ModLog.Write("Heart of Greed held at death; curse budget cleared.");
+        }
         CopyPersistentNonDeckState(deathState, checkpoint);
 
         try
@@ -226,16 +236,25 @@ internal static class CheckpointStore
         }
     }
 
-    // 诅咒预算：以最新存档点为锚点。存档点捕获时清零（a=0，b=0）；每死亡
-    // 一次先计算（a++，b += a/3）再施加。回归后的诅咒固定为“愧疚 a 张 +
-    // 受伤 b 张”，数量只由死亡次数决定，无法通过死亡前的牌组操作刷改。
+    // 诅咒预算：以最新存档点为锚点。A/B 直接表示“下一次死亡将要施加的
+    // 愧疚/受伤数量”——存档点捕获后为（a=1，b=0），因此下一次死亡固定
+    // 为 1 张愧疚。回归时先按当前 A/B 施加诅咒，再推进到下一次
+    // （a++、b += a/3）。施加数量只由死亡次数决定，无法通过死亡前的
+    // 牌组操作刷改；顶栏显示因此可以直接读取 A/B 而无需换算。
     internal static class CurseBudget
     {
         private sealed class BudgetFile
         {
+            // 2 = 新语义（A/B 为下一次死亡施加的数量，锚点 a=1）；0 = 旧语义
+            // （A/B 为已施加的数量，锚点 a=0）。
+            public int Version { get; set; }
             public int A { get; set; }
             public int B { get; set; }
+            // 强欲线（强欲之心）下置位：此后即使捕获新存档点也保持 a=b=0。
+            public bool Suppressed { get; set; }
         }
+
+        private const int CurrentVersion = 2;
 
         private static readonly object Sync = new();
         private static readonly string BudgetPath = Path.Combine(
@@ -253,8 +272,22 @@ internal static class CheckpointStore
             }
             catch (Exception exception)
             {
-                ModLog.Write($"Curse budget load failed; starting from zero: {exception.Message}");
-                _file = new BudgetFile();
+                ModLog.Write($"Curse budget load failed; starting from the first-death value: {exception.Message}");
+                _file = new BudgetFile { Version = CurrentVersion, A = 1, B = 0 };
+                return _file;
+            }
+
+            // 旧语义迁移：旧 A/B 是“已施加的数量”，旧的顶栏显示为
+            // （A+1, B+(A+1)/3）；新语义把同一组数字直接存成待施加数量。
+            if (_file.Version < CurrentVersion)
+            {
+                var oldA = _file.A;
+                var oldB = _file.B;
+                _file.A = oldA + 1;
+                _file.B = oldB + (oldA + 1) / 3;
+                _file.Version = CurrentVersion;
+                Save();
+                ModLog.Write($"Curse budget migrated to the new semantics: a={_file.A}, b={_file.B}.");
             }
             return _file;
         }
@@ -271,27 +304,64 @@ internal static class CheckpointStore
             }
         }
 
+        // 新锚点（存档点捕获）：下一次死亡施加 1 张愧疚；强欲线下保持清零。
         public static void Reset(string reason = "checkpoint capture")
+        {
+            lock (Sync)
+            {
+                var file = EnsureLoaded();
+                if (!file.Suppressed)
+                {
+                    file.A = 1;
+                    file.B = 0;
+                }
+                Save();
+                ModLog.Write(file.Suppressed
+                    ? $"Curse budget anchor captured under the Greed suppression ({reason}): a={file.A}, b={file.B}."
+                    : $"Curse budget reset ({reason}): a=1, b=0.");
+            }
+        }
+
+        // 新开局：清除抑制标记，恢复到普通的首次死亡预算。
+        public static void ResetForNewRun()
+        {
+            lock (Sync)
+            {
+                var file = EnsureLoaded();
+                file.Suppressed = false;
+                file.A = 1;
+                file.B = 0;
+                Save();
+            }
+            ModLog.Write("Curse budget reset for a new run: a=1, b=0 (suppression cleared).");
+        }
+
+        // 强欲线：预算固定为 0，死亡不再施加任何诅咒，顶栏显示“愧疚 0 受伤 0”。
+        public static void ClearToZero(string reason)
         {
             lock (Sync)
             {
                 var file = EnsureLoaded();
                 file.A = 0;
                 file.B = 0;
+                file.Suppressed = true;
                 Save();
             }
-            ModLog.Write($"Curse budget reset ({reason}): a=0, b=0.");
+            ModLog.Write($"Curse budget cleared to zero ({reason}): a=0, b=0.");
         }
 
-        public static void OnDeath()
+        // 本次死亡的诅咒已施加完毕，推进到下一次的预算（a++、b += a/3）。
+        public static void AdvanceAfterDeath()
         {
             lock (Sync)
             {
                 var file = EnsureLoaded();
+                if (file.Suppressed)
+                    return;
                 file.A++;
                 file.B += file.A / 3;
                 Save();
-                ModLog.Write($"Curse budget after death: a={file.A}, b={file.B}.");
+                ModLog.Write($"Curse budget advanced for the next death: a={file.A}, b={file.B}.");
             }
         }
 
@@ -386,8 +456,8 @@ internal static class CheckpointStore
         try { File.Delete(CheckpointPath); } catch { }
         try { File.Delete(CheckpointVersionPath); } catch { }
         try { File.Delete(LegacyPendingRestoredCardsPath); } catch { }
-        // 新开局：诅咒预算一并清零。
-        CurseBudget.Reset();
+        // 新开局：清除强欲抑制，诅咒预算回到首次死亡的锚点。
+        CurseBudget.ResetForNewRun();
     }
 
     private static void CopyPersistentNonDeckState(
@@ -487,7 +557,7 @@ internal static class CheckpointStore
     // 其余遗物仍遵循检查点快照规则（回归时回到存档点时的遗物列表）。
     public static void RecordEchidnaRelic(RelicModel relic, Player owner)
     {
-        if (relic is not (PainOfThePast or SacrificeOfThePresent or BonesOfTheFuture or HeartOfGreed or HeartOfSloth or HeartOfPride or OttoContract) ||
+        if (relic is not (PainOfThePast or SacrificeOfThePresent or BonesOfTheFuture or HeartOfGreed or HeartOfSloth or HeartOfPride or HeartOfWrath or OttoContract) ||
             !File.Exists(CheckpointPath) || !File.Exists(CheckpointVersionPath))
             return;
 

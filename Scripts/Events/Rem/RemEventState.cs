@@ -18,7 +18,8 @@ namespace ReturnByDeath;
 // “左绿不了 / 右红好的”决定分支：
 //   绿色“不了”→ 回满血（上限补到 86、86/86）与删除所有愧疚一起生效，
 //   400ms 后播放蕾姆的从零开始（50% 音量），再 1.5s 后从角色全卡池的升级
-//   稀有卡中任选 2 张加入牌组；
+//   稀有卡中任选 1 张加入牌组；其数字费用永久固定为 0、X 费保持原样，
+//   日后被移除时进入愤怒 IF 线；
 //   红色“好的”→ 进入怠惰 IF 线（掐断自杀流程、继续正常游戏）。
 internal static class RemEventState
 {
@@ -30,6 +31,16 @@ internal static class RemEventState
         // 最终选择绿色“不了”后置位；第一层 Boss 胜利时据此追加遗忘之魂。
         public bool ChoseRewardBranch { get; set; }
         public bool ForgottenSoulGranted { get; set; }
+        // “不了”奖励牌的持久身份。ModelId 拆成两个字符串，避免依赖游戏
+        // record 类型的 System.Text.Json 构造规则；同名牌用获得楼层与序号区分。
+        public bool RewardCardSelected { get; set; }
+        public string? RewardCardCategory { get; set; }
+        public string? RewardCardEntry { get; set; }
+        public int RewardCardUpgradeLevel { get; set; }
+        public int? RewardCardFloorAddedToDeck { get; set; }
+        public int RewardCardOrdinal { get; set; }
+        public ulong RewardCardPlayerNetId { get; set; }
+        public bool RewardCardRemoved { get; set; }
     }
 
     private const string RewardSfxFile = "蕾姆的从零开始.wav";
@@ -60,6 +71,9 @@ internal static class RemEventState
     private static RemFile? _file;
     private static int _flowRunning;
     private static int _forgottenSoulGrantInProgress;
+    private static WeakReference<CardModel>? _rewardCard;
+    private static readonly HashSet<CardModel> RewardPreviewCards = new(
+        (IEqualityComparer<CardModel>)ReferenceEqualityComparer.Instance);
 
     public static void ResetForNewRun()
     {
@@ -69,6 +83,9 @@ internal static class RemEventState
             try { File.Delete(StatePath); } catch { }
         }
         Volatile.Write(ref _forgottenSoulGrantInProgress, 0);
+        _rewardCard = null;
+        lock (RewardPreviewCards)
+            RewardPreviewCards.Clear();
     }
 
     public static void OnMapAdvanced()
@@ -103,6 +120,8 @@ internal static class RemEventState
         RestoreBgmVolume();
         _popupCompletion = null;
         _popupInverted = false;
+        _rewardCard = null;
+        ClearRewardCandidates();
         Volatile.Write(ref _flowRunning, 0);
     }
 
@@ -198,6 +217,156 @@ internal static class RemEventState
             var file = EnsureLoaded();
             file.ChoseRewardBranch = true;
             Save();
+        }
+    }
+
+    // 选卡页里的候选牌也要立即显示为 0 费（X 费保持原样）；这些临时实例只按引用记录，
+    // 关闭选卡页后清空，不会把同名的普通卡误判成蕾姆奖励。
+    private static void PrepareRewardCandidate(CardModel card)
+    {
+        SetRewardCost(card);
+        lock (RewardPreviewCards)
+            RewardPreviewCards.Add(card);
+    }
+
+    private static void ClearRewardCandidates()
+    {
+        lock (RewardPreviewCards)
+            RewardPreviewCards.Clear();
+    }
+
+    private static void SetRewardCost(CardModel card)
+    {
+        if (!card.EnergyCost.CostsX)
+            card.EnergyCost.SetCustomBaseCost(0);
+    }
+
+    private static bool MatchesRewardSignature(CardModel card, RemFile file)
+    {
+        if (!file.RewardCardSelected || file.RewardCardRemoved ||
+            card.Id.Category != file.RewardCardCategory ||
+            card.Id.Entry != file.RewardCardEntry ||
+            card.CurrentUpgradeLevel != file.RewardCardUpgradeLevel ||
+            card.FloorAddedToDeck != file.RewardCardFloorAddedToDeck)
+        {
+            return false;
+        }
+
+        return card.Owner?.NetId == file.RewardCardPlayerNetId;
+    }
+
+    // 在奖励真正加入 Deck 后记录身份。费用规则本身由运行时补丁保证，
+    // 因而保存退出和死亡回归重新构造卡牌后仍然是 0 费。
+    private static void MarkRewardCard(CardModel card, Player owner)
+    {
+        SetRewardCost(card);
+        lock (Sync)
+        {
+            var file = EnsureLoaded();
+            file.RewardCardSelected = true;
+            file.RewardCardCategory = card.Id.Category;
+            file.RewardCardEntry = card.Id.Entry;
+            file.RewardCardUpgradeLevel = card.CurrentUpgradeLevel;
+            file.RewardCardFloorAddedToDeck = card.FloorAddedToDeck;
+            file.RewardCardPlayerNetId = owner.NetId;
+            file.RewardCardRemoved = false;
+
+            var matches = owner.Deck.Cards.Where(candidate =>
+                candidate.Id == card.Id &&
+                candidate.CurrentUpgradeLevel == card.CurrentUpgradeLevel &&
+                candidate.FloorAddedToDeck == card.FloorAddedToDeck).ToList();
+            var ordinal = matches.FindIndex(candidate => ReferenceEquals(candidate, card));
+            file.RewardCardOrdinal = Math.Max(0, ordinal);
+            _rewardCard = new WeakReference<CardModel>(card);
+            Save();
+        }
+        ModLog.Write($"Rem reward card marked as permanently free: {card.Id} (floor={card.FloorAddedToDeck}, ordinal={GetRewardCardOrdinal()}).");
+    }
+
+    private static int GetRewardCardOrdinal()
+    {
+        lock (Sync)
+            return EnsureLoaded().RewardCardOrdinal;
+    }
+
+    // 费用查询既可能收到永久牌组实例，也可能收到它的战斗副本；战斗副本
+    // 通过 DeckVersion 回指原牌。首次读档后则按持久签名重新绑定引用。
+    internal static bool IsRewardCostCard(CardModel? card)
+    {
+        if (card is null)
+            return false;
+
+        lock (RewardPreviewCards)
+        {
+            if (RewardPreviewCards.Contains(card))
+                return true;
+        }
+
+        var deckCard = card.Pile?.Type == PileType.Deck ? card : card.DeckVersion;
+        if (deckCard is null)
+            return false;
+
+        lock (Sync)
+        {
+            var file = EnsureLoaded();
+            if (!file.RewardCardSelected || file.RewardCardRemoved)
+                return false;
+
+            if (_rewardCard is not null && _rewardCard.TryGetTarget(out var bound))
+            {
+                if (ReferenceEquals(deckCard, bound))
+                    return true;
+
+                // 同一副当前牌组里的同名牌不是奖励牌；死亡回归或读档重建了
+                // Player/Deck 时旧引用才算失效，随后按签名绑定到新实例。
+                if (ReferenceEquals(bound.Owner, deckCard.Owner) &&
+                    bound.Owner?.Deck.Cards.Any(candidate => ReferenceEquals(candidate, bound)) == true)
+                {
+                    return false;
+                }
+
+                _rewardCard = null;
+            }
+
+            var owner = deckCard.Owner;
+            if (owner is null || owner.NetId != file.RewardCardPlayerNetId)
+                return false;
+
+            var matches = owner.Deck.Cards.Where(candidate => MatchesRewardSignature(candidate, file)).ToList();
+            if (matches.Count == 0)
+                return false;
+
+            // 若奖励牌之前存在同层获得的同名牌，而那张普通牌后来先被删除，
+            // 持久序号会向前收缩；取当前可用的最后序号即可继续锁定原奖励牌。
+            var resolvedIndex = Math.Clamp(file.RewardCardOrdinal, 0, matches.Count - 1);
+            if (resolvedIndex != file.RewardCardOrdinal)
+            {
+                file.RewardCardOrdinal = resolvedIndex;
+                Save();
+            }
+            var resolved = matches[resolvedIndex];
+            _rewardCard = new WeakReference<CardModel>(resolved);
+            SetRewardCost(resolved);
+            return ReferenceEquals(deckCard, resolved);
+        }
+    }
+
+    internal static bool IsRewardCardBeingRemoved(CardModel? card) =>
+        card is not null && card.Pile?.Type == PileType.Deck && IsRewardCostCard(card);
+
+    // 原生删牌任务成功结束后只消费一次奖励牌身份，再进入愤怒线。
+    internal static bool CompleteRewardCardRemoval()
+    {
+        lock (Sync)
+        {
+            var file = EnsureLoaded();
+            if (!file.RewardCardSelected || file.RewardCardRemoved)
+                return false;
+
+            file.RewardCardRemoved = true;
+            _rewardCard = null;
+            Save();
+            return true;
         }
     }
 
@@ -414,11 +583,8 @@ internal static class RemEventState
                 }
 
                 // 红色“好的”：进入「怠惰」IF 线，掐断自杀流程。
-                // 同时授予“怠惰之心”遗物（获得钩子对已进入的怠惰线是 no-op），
-                // 并写入检查点：死亡回归后遗物与线路都不消失。
-                RouteState.EnterSlothRoute();
-                await GrantHeartOfSlothAsync();
-                SlothEndingOverlay.TryShow();
+                // 与正常结局触发完全相同的代码（线路标记 + 怠惰之心 + 结局演出）。
+                await EnterSlothAsync(playPresentation: true);
                 MarkUsed();
                 FinishFlow("sloth IF route entered.");
                 return;
@@ -431,6 +597,17 @@ internal static class RemEventState
             ModLog.Write($"Rem event flow failed at branch {stage}: {exception}");
             FinishFlow("flow error.");
         }
+    }
+
+    // 进入怠惰线的完整流程：线路标记 + 授予怠惰之心。结局演出（音效 + 羽化
+    // 结局图）由 playPresentation 控制；控制台 boss sloth 以 false 复用同一套
+    // 代码，因此同样能拿到怠惰之心。
+    internal static async Task EnterSlothAsync(bool playPresentation)
+    {
+        RouteState.EnterSlothRoute();
+        await GrantHeartOfSlothAsync();
+        if (playPresentation)
+            SlothEndingOverlay.TryShow();
     }
 
     // 选择“好的”进入怠惰线时的遗物授予：怠惰之心本身就是“进入怠惰线”的
@@ -631,8 +808,8 @@ internal static class RemEventState
     }
 
 
-    // 复制卡奖励：选卡池为“该角色全卡池中的稀有卡”，全部以升级形态出现，
-    // 任选（最多）2 张加入牌组。选卡 UI 走原版奖励网格
+    // 复制卡奖励：选卡池为“该角色全卡池中的稀有卡”，全部以升级形态和
+    // 数字费用固定为 0（X 费保持原样），只选 1 张加入牌组。选卡 UI 走原版奖励网格
     // （与“奶酪房间”事件同一条通道），未选中的实例随后废弃。
     private static async Task ShowRewardSelectionAsync()
     {
@@ -660,24 +837,37 @@ internal static class RemEventState
             return;
         }
 
-        // 逐张实例化为归属玩家的升级形态，作为选卡池。
+        // 逐张实例化为归属玩家的升级形态；数字费用临时标为 0，X 费保持原样。
         var results = possible.Select(model =>
         {
             var card = player.RunState.CreateCard(model, player);
             card.UpgradeInternal();
+            PrepareRewardCandidate(card);
             return new CardCreationResult(card);
         }).ToList();
-        ModLog.Write($"Rem reward pool: {results.Count} upgraded rare cards from the character pool.");
+        ModLog.Write($"Rem reward pool: {results.Count} upgraded rare cards; numeric costs are zero and X costs are unchanged.");
 
-        var count = Math.Min(2, results.Count);
-        var prefs = new CardSelectorPrefs(new LocString("return-by-death", "rem-reward-prompt"), count);
-        var selected = await CardSelectCmd.FromSimpleGridForRewards(
-            new BlockingPlayerChoiceContext(), results, player, prefs);
+        IEnumerable<CardModel> selected;
+        try
+        {
+            var prefs = new CardSelectorPrefs(new LocString("return-by-death", "rem-reward-prompt"), 1);
+            selected = await CardSelectCmd.FromSimpleGridForRewards(
+                new BlockingPlayerChoiceContext(), results, player, prefs);
+        }
+        finally
+        {
+            ClearRewardCandidates();
+        }
 
         foreach (var card in selected)
         {
-            CardCmd.PreviewCardPileAdd(await CardPileCmd.Add(card, PileType.Deck));
-            ModLog.Write($"Rem reward: added upgraded rare card {card.Id}.");
+            var addResult = await CardPileCmd.Add(card, PileType.Deck);
+            CardCmd.PreviewCardPileAdd(addResult);
+            if (addResult.success && addResult.cardAdded is { } added)
+            {
+                MarkRewardCard(added, player);
+                ModLog.Write($"Rem reward: added upgraded rare card {added.Id}; numeric cost is permanently zero and X cost is unchanged.");
+            }
         }
     }
 

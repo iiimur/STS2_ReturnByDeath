@@ -72,15 +72,24 @@ internal static class ReinhardRemovalTracking
     public static async Task ShowPrideEndingAfterRemovalAsync(Task nativeRemoval)
     {
         await nativeRemoval;
+        await EnterPrideAsync(playPresentation: true);
+    }
+
+    // 进入傲慢线的完整流程：线路标记 + 授予傲慢之心。结局演出（音效 + 羽化
+    // 结局图）由 playPresentation 控制；控制台 boss pride 以 false 复用同一套
+    // 代码，因此同样能拿到傲慢之心。
+    public static async Task EnterPrideAsync(bool playPresentation)
+    {
         RouteState.EnterPrideRoute();
         await GrantHeartOfPrideAsync();
-        PrideEndingOverlay.TryShow();
+        if (playPresentation)
+            PrideEndingOverlay.TryShow();
     }
 
     // 傲慢线的新机制：进入时授予“傲慢之心”——死亡诅咒变为 0 费可打出，
     // 打出时三选一升级牌进手牌。旧的“回归不加诅咒+血量+1”已删除（与强欲
     // 线重复），诅咒照常叠加，如今它们是可以打出去的燃料而非纯粹的负担。
-    private static async Task GrantHeartOfPrideAsync()
+    internal static async Task GrantHeartOfPrideAsync()
     {
         try
         {

@@ -543,8 +543,11 @@ internal static class EncounterJournalStore
             _file!.Encounters.RemoveAll(x => x.Act != act);
             Save();
             _previewAct = act;
-            _replayNormalRecordCursor = 0;
-            _replayEliteRecordCursor = 0;
+            // 回归点不一定在层首：火堆检查点之前已经消耗过的普通/精英
+            // 遭遇必须从游标中扣除。若一律归零，代理预读会把火堆后的战斗
+            // 当成本层第 1 场；EncounterId 重复时也会锁到前面的旧记录。
+            (_replayNormalRecordCursor, _replayEliteRecordCursor) =
+                GetConsumedEncounterCounts(act);
             Volatile.Write(ref _currentEncounterShouldSkip, 0);
             Volatile.Write(ref _currentEncounterStartHp, -1);
             Volatile.Write(ref _currentEncounterSkipped, 0);
@@ -554,9 +557,36 @@ internal static class EncounterJournalStore
             Volatile.Write(ref _currentCombatStartHp, -1);
             _seenJournalModels.Clear();
             _lastReplayCallSignature = null;
+            ModLog.Write($"Encounter replay cursors aligned to checkpoint history: " +
+                $"act={act}, normal={_replayNormalRecordCursor}, elite={_replayEliteRecordCursor}.");
         }
         if (ReplayActive)
             EncounterPreviewOverlay.Refresh();
+    }
+
+    private static (int Normal, int Elite) GetConsumedEncounterCounts(int act)
+    {
+        if (!ReplayActive || RunManager.Instance?.DebugOnlyGetState() is not { } state ||
+            state.CurrentActIndex != act || act < 0 || act >= state.MapPointHistory.Count)
+            return (0, 0);
+
+        var normal = 0;
+        var elite = 0;
+        foreach (var entry in state.MapPointHistory[act])
+        {
+            if (entry.MapPointType == MapPointType.Elite ||
+                entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Elite))
+            {
+                elite++;
+            }
+            else if (entry.MapPointType == MapPointType.Monster ||
+                     entry.MapPointType == MapPointType.Unknown && entry.HasRoomOfType(RoomType.Monster))
+            {
+                normal++;
+            }
+        }
+
+        return (normal, elite);
     }
 
     public static void ClearPreview()

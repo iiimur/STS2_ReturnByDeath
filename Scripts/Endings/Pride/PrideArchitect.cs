@@ -94,7 +94,7 @@ internal static class PrideArchitectDialogueOverride
                 "pride-architect-line-0" => "到此为止了哦，恶党",
                 "pride-architect-line-1" => "这是能够让你成为国王的，唯一的方法。",
                 "pride-architect-line-2" => "为什么……",
-                "rem-reward-prompt" => "选择2张升级过的稀有卡，加入你的卡组",
+                "rem-reward-prompt" => "选择1张升级过的稀有卡，加入你的卡组。数字费用固定为0，X费不变",
                 "preview-normal-title" => "普通怪物",
                 "preview-elite-title" => "精英怪物",
                 "preview-unknown-title" => "问号",
@@ -150,7 +150,8 @@ internal static class PrideArchitectFormattedTextPatch
     [HarmonyPrefix]
     private static bool Prefix(LocString __instance, ref string __result)
     {
-        if (PrideArchitectDialogueOverride.TryGetText(__instance, out var text))
+        if (PrideArchitectDialogueOverride.TryGetText(__instance, out var text) ||
+            WrathArchitectDialogueOverride.TryGetText(__instance, out text))
         {
             __result = text;
             return false;
@@ -166,7 +167,8 @@ internal static class PrideArchitectRawTextPatch
     [HarmonyPrefix]
     private static bool Prefix(LocString __instance, ref string __result)
     {
-        if (PrideArchitectDialogueOverride.TryGetText(__instance, out var text))
+        if (PrideArchitectDialogueOverride.TryGetText(__instance, out var text) ||
+            WrathArchitectDialogueOverride.TryGetText(__instance, out text))
         {
             __result = text;
             return false;
@@ -195,6 +197,12 @@ internal static class PrideArchitectDeathAudio
         {
             return nativeBeforeChoice;
         }
+
+        // 到这里才算真正抵达傲慢终局：傲慢线 + 建筑师终局 + 第三句对白已显示
+        // 并点击 Continue（原版死亡结算的起点）。此处解锁傲慢结局成就，与怠惰/
+        // 强欲“真正到结局才算完成”保持一致；进入路线时不再提前解锁。
+        IfAchievements.Unlock("pride_ending");
+        ModLog.Write("Pride finale reached: the third Architect Continue was chosen; pride_ending unlocked.");
 
         // 只把音频启动延后；原版 Continue 的后续动作必须立即继续，
         // 否则建筑师的 0 伤害攻击、死亡和结算都会被一起延迟。

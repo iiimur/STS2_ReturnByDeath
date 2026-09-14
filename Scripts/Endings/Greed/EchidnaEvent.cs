@@ -204,13 +204,22 @@ internal static class EchidnaTrial
         var owner = flower.Owner ?? throw new InvalidOperationException("Echidna event has no owner.");
         // 暗改：不调用 DealReachDeeperDamage，跳入花心不扣血。
         ModLog.Write("Echidna: Heart of Greed chosen; the Greed IF route begins (no damage taken).");
-        var relic = await RelicCmd.Obtain<HeartOfGreed>(owner);
-        CheckpointStore.RecordEchidnaRelic(relic, owner);
-        GreedIfState.Mark();
-        EchidnaCurseCleanup.Mark(owner);
+        await GrantHeartOfGreedAsync(owner);
         // 「强欲」IF 线触发演出：与傲慢/怠惰结局同款的羽化触发图淡入。
         GreedEndingOverlay.TryShow();
         SetEventFinished(flower, new LocString("events", "RBD_FLOWER.HEART.result"));
+    }
+
+    // 获得强欲之心的完整效果：授予遗物、写入检查点、清零诅咒预算、点亮线路、
+    // 标记结算页的诅咒清理。控制台 boss greed 复用同一段代码（只是不播放结局演出）。
+    internal static async Task GrantHeartOfGreedAsync(Player owner)
+    {
+        var relic = await RelicCmd.Obtain<HeartOfGreed>(owner);
+        CheckpointStore.RecordEchidnaRelic(relic, owner);
+        // 强欲线不再愧疚：预算立即清零，顶栏显示“愧疚 0 受伤 0”。
+        CheckpointStore.CurseBudget.ClearToZero("Heart of Greed obtained");
+        GreedIfState.Mark();
+        EchidnaCurseCleanup.Mark(owner);
     }
 
     private static Task DealReachDeeperDamage(ColossalFlower flower, int digs) =>

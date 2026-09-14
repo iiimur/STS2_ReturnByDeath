@@ -187,6 +187,10 @@ internal static class GreedRelicText
         ["HEART_OF_PRIDE.title"] = "傲慢之心",
         ["HEART_OF_PRIDE.description"] = "死亡诅咒（[gold]愧疚[/gold]、[gold]受伤[/gold]）可被打出，费用为[blue]0[/blue]。打出时，从三张升级后的随机牌中选择一张加入手牌，这张牌在本回合可被免费打出。",
         ["HEART_OF_PRIDE.flavor"] = "区区诅咒，也配束缚我？",
+
+        ["HEART_OF_WRATH.title"] = "愤怒之心",
+        ["HEART_OF_WRATH.description"] = "如果你在本回合打出的牌少于等于[blue]1[/blue]张，则在回合结束时获得[blue]999[/blue]点[gold]格挡[/gold]。",
+        ["HEART_OF_WRATH.flavor"] = "什么都不必再说。",
     };
 
     // 艾姬多娜事件（墓碑巨大花卉）的标题、开场描述、试验选项与结算页文字，注入原生 "events" 表。
@@ -228,11 +232,15 @@ internal static class GreedRelicText
             "花没有枯萎。它只是，沉默了。",
     };
 
-    // 奥托卡（朋友的护符给的临时牌）的描述：{IfUpgraded:show:10|6} 处理升级
-    // 力量差异；“保留/消耗”词条块由卡牌的 CanonicalKeywords 自动渲染。
+    // 卡牌文本注入 "cards" 表。奥托卡用自定义键（它的描述渲染走自己的补丁）；
+    // 「肃清」用原生键格式 {Id.Entry}.title/.description（Id.Entry 为类名的大写
+    // 蛇形，PurgeCard → PURGE_CARD），因此无需覆写 Title/Description 取值器。
     private static readonly Dictionary<string, string> CardEntries = new()
     {
         ["RBD_OTTO.description"] = "本回合获得{IfUpgraded:show:10|6}点[gold]力量[/gold]。\n[gold]击晕[/gold]所有敌人。",
+
+        ["PURGE_CARD.title"] = "肃清",
+        ["PURGE_CARD.description"] = "造成{Damage:diff()}点伤害。",
     };
 
     // 注意：SetLanguageInternal 首次发生在 LocManager 构造函数内部，

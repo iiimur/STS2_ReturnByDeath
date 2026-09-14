@@ -57,6 +57,8 @@
     <ModStaticFiles Include="Resource/图片/傲慢结局触发-羽化.png" />
     <!-- 拿到强欲之心（进入强欲 IF 线）时显示的羽化结局图。DLL 从 mod 根目录读取它。 -->
     <ModStaticFiles Include="Resource/图片/强欲结局触发-羽化.png" />
+    <!-- 蕾姆奖励稀有牌被移出牌组（进入愤怒 IF 线）时显示的羽化结局图。 -->
+    <ModStaticFiles Include="Resource/图片/愤怒结局触发-羽化.png" />
     <ModStaticFiles Include="Resource/图片/cutin-1.png" />
     <ModStaticFiles Include="Resource/图片/cutin-2.png" />
     <ModStaticFiles Include="Resource/图片/cutin-3.png" />

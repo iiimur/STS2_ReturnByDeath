@@ -330,15 +330,18 @@ internal static class EncounterPreviewOverlay
         var history = act < state.MapPointHistory.Count ? state.MapPointHistory[act] : null;
         if (history is null)
             return;
+        var historyByVisit = AlignHistoryToVisitedCoords(state, history);
 
         var coord = point.Point.coord;
-        var visited = state.VisitedMapCoords.Any(v => v.col == coord.col && v.row == coord.row);
+        var visitedIndex = FindVisitedIndex(state, coord);
+        var visited = visitedIndex >= 0;
 
         // 类别判定：已到访的节点按它实际发生的内容（问号房打出战斗时两个
         // 类别都算）；未到访的按地图点类型（问号房未来会掷出什么都无法
         // 预知，只归入问号序列）。
-        MapPointHistoryEntry? visitedEntry =
-            visited && coord.row < history.Count ? history[coord.row] : null;
+        MapPointHistoryEntry? visitedEntry = visited && visitedIndex < historyByVisit.Count
+            ? historyByVisit[visitedIndex]
+            : null;
         var categories = visitedEntry is not null
             ? GetEntryCategories(visitedEntry)
             : GetPointCategories(point.Point.PointType);
@@ -346,7 +349,8 @@ internal static class EncounterPreviewOverlay
         var firstRowShown = false;
         foreach (var category in categories)
         {
-            var seqIdx = ResolveSequenceIndex(state, history, point.Point, category, visited);
+            var seqIdx = ResolveSequenceIndex(
+                state, historyByVisit, point.Point, category, visitedIndex);
             if (!seqIdx.HasValue)
                 continue;
             if (!PreviewRowsBySequence.TryGetValue((act, category, seqIdx.Value), out var rows))
@@ -394,25 +398,101 @@ internal static class EncounterPreviewOverlay
         }
     }
 
-    // 计算地图节点在其类别序列中的序号。已到访：原生历史 0..row 中同类别的
-    // 条目数（历史随真实路线走）。未到访：沿地图父节点链向上找最近的已到访
+    // 原版 LoadRun 恢复到已完成火堆时，会在火堆的原历史后再追加一条没有
+    // HEAL/SMITH 的火堆落地记录，却不会向 VisitedMapCoords 追加坐标。这里按
+    // “实际到访坐标顺序 + 地图节点类型”重新对齐历史，避免火堆之后所有节点
+    // 因为 history[地图行号] 而整体错一位。返回列表与 VisitedMapCoords 等长；
+    // 当前尚未写入历史的节点以 null 表示。
+    private static List<MapPointHistoryEntry?> AlignHistoryToVisitedCoords(
+        RunState state,
+        IReadOnlyList<MapPointHistoryEntry> history)
+    {
+        var aligned = new List<MapPointHistoryEntry?>(state.VisitedMapCoords.Count);
+        var historyIndex = 0;
+        MapPointHistoryEntry? previous = null;
+
+        foreach (var coord in state.VisitedMapCoords)
+        {
+            var pointType = state.Map.GetPoint(coord)?.PointType;
+            while (historyIndex < history.Count &&
+                   IsRecoveryRestLandingDuplicate(previous, history[historyIndex]) &&
+                   (pointType != history[historyIndex].MapPointType ||
+                    historyIndex + 1 < history.Count &&
+                    history[historyIndex + 1].MapPointType == pointType))
+            {
+                historyIndex++;
+            }
+
+            if (historyIndex < history.Count &&
+                (!pointType.HasValue || history[historyIndex].MapPointType == pointType.Value))
+            {
+                previous = history[historyIndex++];
+                aligned.Add(previous);
+            }
+            else
+            {
+                aligned.Add(null);
+            }
+        }
+
+        return aligned;
+    }
+
+    private static bool IsRecoveryRestLandingDuplicate(
+        MapPointHistoryEntry? previous,
+        MapPointHistoryEntry candidate)
+    {
+        if (previous is null ||
+            !previous.HasRoomOfType(RoomType.RestSite) ||
+            !candidate.HasRoomOfType(RoomType.RestSite) ||
+            !previous.PlayerStats.Any(stats => stats.RestSiteChoices.Count > 0) ||
+            candidate.PlayerStats.Any(stats => stats.RestSiteChoices.Count > 0) ||
+            previous.MapPointType != candidate.MapPointType ||
+            previous.Rooms.Count != candidate.Rooms.Count)
+            return false;
+
+        for (var i = 0; i < previous.Rooms.Count; i++)
+        {
+            var left = previous.Rooms[i];
+            var right = candidate.Rooms[i];
+            if (left.RoomType != right.RoomType ||
+                !string.Equals(left.ModelId?.ToString(), right.ModelId?.ToString(), StringComparison.Ordinal))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static int FindVisitedIndex(RunState state, MapCoord coord)
+    {
+        for (var i = state.VisitedMapCoords.Count - 1; i >= 0; i--)
+        {
+            var visited = state.VisitedMapCoords[i];
+            if (visited.col == coord.col && visited.row == coord.row)
+                return i;
+        }
+
+        return -1;
+    }
+
+    // 计算地图节点在其类别序列中的序号。已到访：按与坐标重新对齐后的历史
+    // 统计到该访问位置为止的同类别条目数。未到访：沿地图父节点链向上找最近的已到访
     // 祖先，序号 = 祖先处已消耗的同类别数 + 途中（含本节点）的同类别节点数
     // ——序号跟着节点所在的分支走，切路线不会互相串行。多父分叉取列序靠前
     // 的一条（近似）；找不到已到访祖先时按整条历史已消耗数兜底。
     private static int? ResolveSequenceIndex(
         RunState state,
-        IReadOnlyList<MapPointHistoryEntry> history,
+        IReadOnlyList<MapPointHistoryEntry?> historyByVisit,
         MapPoint node,
         string category,
-        bool visited)
+        int visitedIndex)
     {
-        if (visited)
+        if (visitedIndex >= 0)
         {
-            var row = node.coord.row;
             var visitedCount = 0;
-            var last = Math.Min(row, history.Count - 1);
+            var last = Math.Min(visitedIndex, historyByVisit.Count - 1);
             for (var i = 0; i <= last; i++)
-                if (GetEntryCategories(history[i]).Contains(category))
+                if (historyByVisit[i] is { } entry && GetEntryCategories(entry).Contains(category))
                     visitedCount++;
             return visitedCount > 0 ? visitedCount : null;
         }
@@ -436,15 +516,16 @@ internal static class EncounterPreviewOverlay
         var consumed = 0;
         if (anchor is not null)
         {
-            var last = Math.Min(anchor.coord.row, history.Count - 1);
+            var anchorIndex = FindVisitedIndex(state, anchor.coord);
+            var last = Math.Min(anchorIndex, historyByVisit.Count - 1);
             for (var i = 0; i <= last; i++)
-                if (GetEntryCategories(history[i]).Contains(category))
+                if (historyByVisit[i] is { } entry && GetEntryCategories(entry).Contains(category))
                     consumed++;
         }
         else
         {
-            foreach (var entry in history)
-                if (GetEntryCategories(entry).Contains(category))
+            foreach (var entry in historyByVisit)
+                if (entry is not null && GetEntryCategories(entry).Contains(category))
                     consumed++;
         }
 

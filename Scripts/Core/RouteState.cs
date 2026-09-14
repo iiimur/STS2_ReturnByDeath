@@ -2,7 +2,7 @@
 
 namespace ReturnByDeath;
 
-// 两条路线均属于当前一局游戏而非全局设置。单独写入 mod 目录，能够跨保存退出、
+// 各条 IF 路线均属于当前一局游戏而非全局设置。单独写入 mod 目录，能够跨保存退出、
 // 回归重载继续生效；新开局会清空它，因此不会污染下一局。
 internal static class RouteState
 {
@@ -13,6 +13,7 @@ internal static class RouteState
     private static int _ifRoute;
     private static int _prideRoute;
     private static int _slothRoute;
+    private static int _wrathRoute;
     private static int _recoveredFromDeath;
     private static int _atRestedFireCheckpoint;
     private static int _specialBannerPending;
@@ -43,6 +44,15 @@ internal static class RouteState
         {
             EnsureLoaded();
             return Volatile.Read(ref _slothRoute) != 0;
+        }
+    }
+
+    public static bool IsWrathRoute
+    {
+        get
+        {
+            EnsureLoaded();
+            return Volatile.Read(ref _wrathRoute) != 0;
         }
     }
 
@@ -95,6 +105,15 @@ internal static class RouteState
         ModLog.Write("Sloth ending entered: IF route=true, Sloth route=true.");
     }
 
+    public static void EnterWrathRoute()
+    {
+        EnsureLoaded();
+        Interlocked.Exchange(ref _ifRoute, 1);
+        Interlocked.Exchange(ref _wrathRoute, 1);
+        Save();
+        ModLog.Write("Wrath ending entered: IF route=true, Wrath route=true.");
+    }
+
     // 记录一次死亡回归；只有本局第一次回归会安排一次特殊标题报幕。
     public static void MarkRecoveredFromDeath(int actIndex)
     {
@@ -117,6 +136,7 @@ internal static class RouteState
         Volatile.Write(ref _ifRoute, 0);
         Volatile.Write(ref _prideRoute, 0);
         Volatile.Write(ref _slothRoute, 0);
+        Volatile.Write(ref _wrathRoute, 0);
         Volatile.Write(ref _recoveredFromDeath, 0);
         Volatile.Write(ref _atRestedFireCheckpoint, 0);
         Volatile.Write(ref _specialBannerPending, 0);
@@ -141,6 +161,7 @@ internal static class RouteState
             Volatile.Write(ref _ifRoute, saved.IfRoute ? 1 : 0);
             Volatile.Write(ref _prideRoute, saved.PrideRoute ? 1 : 0);
             Volatile.Write(ref _slothRoute, saved.SlothRoute ? 1 : 0);
+            Volatile.Write(ref _wrathRoute, saved.WrathRoute ? 1 : 0);
             Volatile.Write(ref _recoveredFromDeath, saved.RecoveredFromDeath ? 1 : 0);
             Volatile.Write(ref _atRestedFireCheckpoint, saved.AtRestedFireCheckpoint ? 1 : 0);
             Volatile.Write(ref _specialBannerPending, 0);
@@ -160,6 +181,7 @@ internal static class RouteState
                 IfRoute = Volatile.Read(ref _ifRoute) != 0,
                 PrideRoute = Volatile.Read(ref _prideRoute) != 0,
                 SlothRoute = Volatile.Read(ref _slothRoute) != 0,
+                WrathRoute = Volatile.Read(ref _wrathRoute) != 0,
                 RecoveredFromDeath = Volatile.Read(ref _recoveredFromDeath) != 0,
                 AtRestedFireCheckpoint = Volatile.Read(ref _atRestedFireCheckpoint) != 0
             };
@@ -176,6 +198,7 @@ internal static class RouteState
         public bool IfRoute { get; set; }
         public bool PrideRoute { get; set; }
         public bool SlothRoute { get; set; }
+        public bool WrathRoute { get; set; }
         public bool RecoveredFromDeath { get; set; }
         public bool AtRestedFireCheckpoint { get; set; }
         public int[]? RecoveredActs { get; set; }

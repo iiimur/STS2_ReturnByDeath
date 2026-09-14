@@ -14,7 +14,8 @@ internal static class PrideEndingOverlay
         if (Interlocked.Exchange(ref _active, 1) != 0)
             return;
 
-        IfAchievements.Unlock("pride_ending");
+        // 注意：这张“傲慢结局触发”图只代表进入傲慢 IF 线，不是真正通关傲慢终局。
+        // 成就 pride_ending 由建筑师终局的第三次 Continue 解锁（见 PrideArchitectDeathAudio）。
         try
         {
             var tree = Engine.GetMainLoop() as SceneTree;

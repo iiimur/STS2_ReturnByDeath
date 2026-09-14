@@ -6,17 +6,21 @@ namespace ReturnByDeath;
 //   boss pride
 //   boss sloth
 //   boss greed
+//   boss wrath
 //   ending 1～3  （按列表序号切换结局成就）
 //   event 1～7   （按列表序号切换事件成就）
 //
-// boss 系列只开启对应 IF 线；第三层和 BOSS 房间由测试者自己使用原版
-// 控制台命令进入。ending/event 系列按上面数组的展示顺序切换成就状态。
+// boss 系列视为一次正常的结局触发：走与剧情入口完全相同的代码（线路标记、
+// 授予对应遗物与卡牌等），只是不播放结局音效、不淡入羽化结局图。第三层和
+// BOSS 房间仍由测试者自己使用原版控制台命令进入。
+// ending/event 系列按上面数组的展示顺序切换成就状态。
 [HarmonyPatch(typeof(MegaCrit.Sts2.Core.Nodes.Debug.NDevConsole), "ProcessCommand")]
 internal static class ReturnByDeathConsoleCommandPatch
 {
     private const string TestCommand = "boss pride";
     private const string SlothTestCommand = "boss sloth";
     private const string GreedTestCommand = "boss greed";
+    private const string WrathTestCommand = "boss wrath";
     private const string OpenEyeCommand = "map reveal";
 
     [HarmonyPrefix]
@@ -59,11 +63,11 @@ internal static class ReturnByDeathConsoleCommandPatch
 
         if (MatchesTestCommand(args, TestCommand, console, allowInputBufferFallback))
         {
-            RouteState.EnterPrideRoute();
             ArchitectFinaleState.Reset();
             PrideFinalBossOpening.ResetForNewRun();
             PrideFinalBossTransition.ResetForNewRun();
-            ClearConsoleInput(console, TestCommand, "pride route enabled");
+            ClearConsoleInput(console, TestCommand, "pride route enabled (full entry; presentation suppressed)");
+            TaskHelper.RunSafely(ReinhardRemovalTracking.EnterPrideAsync(playPresentation: false));
             return true;
         }
 
@@ -72,19 +76,41 @@ internal static class ReturnByDeathConsoleCommandPatch
             ArchitectFinaleState.Reset();
             PrideFinalBossOpening.ResetForNewRun();
             PrideFinalBossTransition.ResetForNewRun();
-            RouteState.EnterSlothRoute();
-            ClearConsoleInput(console, SlothTestCommand, "sloth route enabled; map reveal and free travel enabled");
+            ClearConsoleInput(console, SlothTestCommand,
+                "sloth route enabled (full entry; presentation suppressed; map reveal and free travel enabled)");
+            TaskHelper.RunSafely(RemEventState.EnterSlothAsync(playPresentation: false));
             return true;
         }
 
         if (MatchesTestCommand(args, GreedTestCommand, console, allowInputBufferFallback))
         {
-            GreedIfState.Mark();
-            ClearConsoleInput(console, GreedTestCommand, "greed IF route enabled");
+            ClearConsoleInput(console, GreedTestCommand, "greed IF route enabled (full entry; presentation suppressed)");
+            TaskHelper.RunSafely(EnterGreedRouteAsync());
+            return true;
+        }
+
+        if (MatchesTestCommand(args, WrathTestCommand, console, allowInputBufferFallback))
+        {
+            ClearConsoleInput(console, WrathTestCommand, "wrath IF route enabled (full entry; presentation suppressed)");
+            TaskHelper.RunSafely(WrathRouteTrigger.EnterWrathAsync(playPresentation: false));
             return true;
         }
 
         return false;
+    }
+
+    // 控制台 boss greed：复现“拿到强欲之心”的全部效果（遗物、检查点持久化、
+    // 诅咒预算清零、线路标记、结算页诅咒清理），只是不播放结局演出。
+    private static async Task EnterGreedRouteAsync()
+    {
+        var player = RunManager.Instance?.DebugOnlyGetState()?.Players.FirstOrDefault();
+        if (player is null)
+        {
+            ModLog.Write("boss greed skipped: no player was available.");
+            return;
+        }
+
+        await EchidnaTrial.GrantHeartOfGreedAsync(player);
     }
 
     // 自定义命令走 Prefix 拦截后，原版 ProcessCommand 的尾部（回显+清空输入）
@@ -131,6 +157,7 @@ internal static class ReturnByDeathConsoleCommandPatch
         return MatchesCommand(input, TestCommand) ||
                MatchesCommand(input, SlothTestCommand) ||
                MatchesCommand(input, GreedTestCommand) ||
+               MatchesCommand(input, WrathTestCommand) ||
                TryParseIndexedCommand(input, "ending", out _) ||
                TryParseIndexedCommand(input, "event", out _);
     }
