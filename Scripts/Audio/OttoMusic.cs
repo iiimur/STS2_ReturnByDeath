@@ -25,6 +25,8 @@ internal static class OttoAcceptanceMusic
     public static bool IsSuppressingNativeRunMusic =>
         Volatile.Read(ref _pending) != 0 || Volatile.Read(ref _active) != 0;
 
+    public static bool IsActive => Volatile.Read(ref _active) != 0;
+
     public static void Arm()
     {
         Volatile.Write(ref _pending, 1);
@@ -159,6 +161,26 @@ internal static class OttoAcceptanceMusic
         StopSpecialMusic();
         // 此方法用于退出到主菜单或退出游戏。原版之后会自行启动相应场景的 BGM，
         // 因此不在这里主动重启当前运行音乐。
+    }
+
+    // 房间切换前使用：只释放专属播放器，不在切换任务尚未完成时重入
+    // NRunMusicController。房间进入完成后由 RestoreNativeMusicAfterRoomTransition
+    // 在下一帧恢复原生音乐。
+    public static void StopForRoomTransition(string reason)
+    {
+        if (!IsActive)
+            return;
+
+        StopSpecialMusic();
+        ModLog.Write($"Otto acceptance BGM stopped before room transition: {reason}.");
+    }
+
+    public static void RestoreNativeMusicAfterRoomTransition()
+    {
+        if (IsSuppressingNativeRunMusic)
+            return;
+
+        RestoreNativeMusic();
     }
 
     private static void Start()
@@ -333,6 +355,73 @@ internal static class OttoAcceptanceRunMusicPatch
     [HarmonyPrefix]
     private static bool Prefix(NRunMusicController __instance) =>
         !OttoAcceptanceMusic.TrySuppressNativeRunMusic(__instance);
+}
+
+// 进入火堆、商店、宝箱等房间时，RunManager.EnterRoom 会先退出当前房间，
+// 再在 EnterRoomInternal 中更新房间参数；这个过程不保证调用 UpdateMusic。
+// 在公开入口前停掉奥托播放器，并等待整个房间切换完成后再恢复原生音乐，
+// 避免专属 AudioStreamPlayer 与房间音乐控制器并存导致主线程卡死。
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.EnterRoom), new[] { typeof(AbstractRoom) })]
+internal static class OttoAcceptanceRoomTransitionPatch
+{
+    [HarmonyPrefix]
+    private static void Prefix(out bool __state)
+    {
+        __state = OttoAcceptanceMusic.IsActive;
+        if (__state)
+            OttoAcceptanceMusic.StopForRoomTransition("RunManager.EnterRoom");
+    }
+
+    [HarmonyPostfix]
+    private static void Postfix(ref Task __result, bool __state)
+    {
+        if (__state)
+            __result = RestoreAfterRoomTransitionAsync(__result);
+    }
+
+    private static async Task RestoreAfterRoomTransitionAsync(Task roomTask)
+    {
+        try
+        {
+            await roomTask;
+        }
+        finally
+        {
+            OttoAcceptanceMusic.RestoreNativeMusicAfterRoomTransition();
+        }
+    }
+}
+
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.EnterRoomWithoutExitingCurrentRoom),
+    new[] { typeof(AbstractRoom), typeof(bool) })]
+internal static class OttoAcceptanceNestedRoomTransitionPatch
+{
+    [HarmonyPrefix]
+    private static void Prefix(out bool __state)
+    {
+        __state = OttoAcceptanceMusic.IsActive;
+        if (__state)
+            OttoAcceptanceMusic.StopForRoomTransition("RunManager.EnterRoomWithoutExitingCurrentRoom");
+    }
+
+    [HarmonyPostfix]
+    private static void Postfix(ref Task __result, bool __state)
+    {
+        if (__state)
+            __result = RestoreAfterRoomTransitionAsync(__result);
+    }
+
+    private static async Task RestoreAfterRoomTransitionAsync(Task roomTask)
+    {
+        try
+        {
+            await roomTask;
+        }
+        finally
+        {
+            OttoAcceptanceMusic.RestoreNativeMusicAfterRoomTransition();
+        }
+    }
 }
 
 // OfferRoomEndRewards 是原版在战斗胜利后正式进入奖励/结算页面的入口。
