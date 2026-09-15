@@ -251,6 +251,7 @@ internal static class GreedRelicText
         {
             manager ??= LocManager.Instance;
             manager?.GetTable(Table).MergeWith(Entries);
+            manager?.GetTable(Table).MergeWith(IfAchievements.LocalizationEntries.ToDictionary());
             manager?.GetTable("events").MergeWith(EventEntries);
             manager?.GetTable("cards").MergeWith(CardEntries);
         }

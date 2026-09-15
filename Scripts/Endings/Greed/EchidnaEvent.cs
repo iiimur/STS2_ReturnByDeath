@@ -25,6 +25,13 @@ internal static class EchidnaOptionsPatch
         if (!TombstoneEntry.SpecialFlowerActive)
             return;
 
+        if (TombstoneEntry.SpecialGreedOnly)
+        {
+            __result = EchidnaTrial.BuildFinalGreedOnlyOptions(__instance);
+            ModLog.Write("Echidna: Otto-rejection escape branch opened directly with the Greed option only.");
+            return;
+        }
+
         __result = EchidnaTrial.BuildInitialOptions(__instance);
         ModLog.Write("Echidna: initial options replaced with the three trials.");
     }
@@ -49,8 +56,12 @@ internal static class EchidnaDescriptionPatch
     [HarmonyPostfix]
     private static void Postfix(EventModel __instance, ref LocString __result)
     {
-        if (__instance is ColossalFlower && TombstoneEntry.SpecialFlowerActive)
-            __result = new LocString("events", "RBD_FLOWER.INITIAL.description");
+        if (__instance is not ColossalFlower || !TombstoneEntry.SpecialFlowerActive)
+            return;
+
+        __result = TombstoneEntry.SpecialGreedOnly
+            ? new LocString("events", "RBD_FLOWER.REACH_DEEPER_2.description")
+            : new LocString("events", "RBD_FLOWER.INITIAL.description");
     }
 }
 
@@ -102,6 +113,9 @@ internal static class EchidnaPortraitPatch
 
 internal static class EchidnaTrial
 {
+    public static List<EventOption> BuildFinalGreedOnlyOptions(ColossalFlower flower) =>
+        new() { HeartOfGreedOption(flower) };
+
     public static List<EventOption> BuildInitialOptions(ColossalFlower flower)
     {
         // 已持有过去的苦痛：第一次试验不再出现，初始页只剩深入探索。

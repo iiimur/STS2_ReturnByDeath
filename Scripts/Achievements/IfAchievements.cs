@@ -4,6 +4,8 @@
 
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
 using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
+using MegaCrit.Sts2.Core.Nodes.Screens.RelicCollection;
+using MegaCrit.Sts2.Core.Models.Relics;
 
 namespace ReturnByDeath;
 
@@ -14,27 +16,48 @@ internal static class IfAchievements
         public string Id { get; init; } = "";
         public string Name { get; init; } = "";
         public string Description { get; init; } = "";
+        public Type DisplayRelicType { get; init; } = typeof(HeartOfPride);
+
+        public string TitleLocKey => $"RBD_IF_ACHIEVEMENT.{Id}.title";
+        public string DescriptionLocKey => $"RBD_IF_ACHIEVEMENT.{Id}.description";
     }
 
     // 结局成就。
     public static readonly Achievement[] EndingAchievements =
     {
-        new() { Id = "pride_ending", Name = "傲慢结局", Description = "见证骄傲之男的终局。" },
-        new() { Id = "sloth_ending", Name = "怠惰结局", Description = "见证怠惰之罪的终局。" },
-        new() { Id = "greed_ending", Name = "强欲结局", Description = "达成强欲终局：第三层的第二次死亡，或是离开那个宝箱。" },
+        new() { Id = "pride_ending", Name = "傲慢结局", Description = "见证骄傲之男的终局。", DisplayRelicType = typeof(HeartOfPride) },
+        new() { Id = "sloth_ending", Name = "怠惰结局", Description = "见证怠惰之罪的终局。", DisplayRelicType = typeof(HeartOfSloth) },
+        new() { Id = "greed_ending", Name = "强欲结局", Description = "达成强欲终局：第三层的第二次死亡，或是离开那个宝箱。", DisplayRelicType = typeof(HeartOfGreed) },
+        new() { Id = "wrath_ending", Name = "愤怒结局", Description = "见证愤怒之罪的终局。", DisplayRelicType = typeof(HeartOfWrath) },
     };
 
     // 事件成就。
     public static readonly Achievement[] EventAchievements =
     {
-        new() { Id = "reinhard_rescue", Name = "剑圣的援手", Description = "在致命的敌方回合前得到莱茵哈鲁特的救援。" },
-        new() { Id = "otto_accept", Name = "朋友的护符", Description = "接受了奥托的提议。" },
-        new() { Id = "otto_reject", Name = "另一条路", Description = "拒绝了奥托的提议。" },
-        new() { Id = "echidna_past", Name = "过去的试炼", Description = "在艾姬多娜事件中通过过去的试炼。" },
-        new() { Id = "echidna_present", Name = "现在的试炼", Description = "在艾姬多娜事件中通过现在的试炼。" },
-        new() { Id = "echidna_future", Name = "未来的试炼", Description = "在艾姬多娜事件中通过未来的试炼。" },
-        new() { Id = "rem_reward", Name = "从零开始", Description = "在蕾姆事件中选择“不了”，带着她的祝福继续前进。" },
+        // 剑圣与拒绝奥托没有专属事件遗物，分别借用最贴近分支意象的
+        // 原生玉石之剑与涅奥护符作为成就图标；悬浮文字仍显示成就本身。
+        new() { Id = "reinhard_rescue", Name = "剑圣的援手", Description = "在致命的敌方回合前得到莱茵哈鲁特的救援。", DisplayRelicType = typeof(SwordOfJade) },
+        new() { Id = "otto_accept", Name = "朋友的护符", Description = "接受了奥托的提议。", DisplayRelicType = typeof(OttoContract) },
+        new() { Id = "otto_reject", Name = "另一条路", Description = "拒绝了奥托的提议。", DisplayRelicType = typeof(NeowsTalisman) },
+        new() { Id = "echidna_past", Name = "过去的试炼", Description = "在艾姬多娜事件中通过过去的试炼。", DisplayRelicType = typeof(PainOfThePast) },
+        new() { Id = "echidna_present", Name = "现在的试炼", Description = "在艾姬多娜事件中通过现在的试炼。", DisplayRelicType = typeof(SacrificeOfThePresent) },
+        new() { Id = "echidna_future", Name = "未来的试炼", Description = "在艾姬多娜事件中通过未来的试炼。", DisplayRelicType = typeof(BonesOfTheFuture) },
+        new() { Id = "rem_reward", Name = "从零开始", Description = "在蕾姆事件中选择“不了”，带着她的祝福继续前进。", DisplayRelicType = typeof(ForgottenSoul) },
     };
+
+    public static IEnumerable<KeyValuePair<string, string>> LocalizationEntries
+    {
+        get
+        {
+            yield return new KeyValuePair<string, string>("RBD_IF_ENDINGS.title", "结局成就");
+            yield return new KeyValuePair<string, string>("RBD_IF_EVENTS.title", "事件成就");
+            foreach (var achievement in EndingAchievements.Concat(EventAchievements))
+            {
+                yield return new KeyValuePair<string, string>(achievement.TitleLocKey, achievement.Name);
+                yield return new KeyValuePair<string, string>(achievement.DescriptionLocKey, achievement.Description);
+            }
+        }
+    }
 
     private static readonly string StatePath = Path.Combine(
         ModLog.ModDirectory, "return-by-death.if-achievements.json");
@@ -111,122 +134,186 @@ internal static class IfAchievements
         return _unlocked;
     }
 
-    // 百科大全的展示面板。
-    public static void ShowPanel()
+    // 直接进入原生遗物收集子页面；具体内容由下面的 LoadRelics 补丁替换。
+    public static void ShowPanel(NCompendiumSubmenu compendium)
     {
-        CanvasLayer? layer = null;
         try
         {
-            var tree = Engine.GetMainLoop() as SceneTree;
-            if (tree?.Root is null)
-                return;
+            var stack = AccessTools.Field(typeof(NSubmenu), "_stack")?.GetValue(compendium) as NSubmenuStack;
+            if (stack is null)
+                throw new InvalidOperationException("The compendium submenu stack is unavailable.");
 
-            var viewportSize = tree.Root.GetViewport().GetVisibleRect().Size;
-            layer = new CanvasLayer
-            {
-                Name = "ReturnByDeathIfAchievements",
-                Layer = 10060,
-                ProcessMode = Node.ProcessModeEnum.Always
-            };
-            tree.Root.AddChild(layer);
-
-            var dim = new ColorRect
-            {
-                Color = new Color(0f, 0f, 0f, 0.78f),
-                Position = Vector2.Zero,
-                Size = viewportSize,
-                MouseFilter = Control.MouseFilterEnum.Stop
-            };
-            layer.AddChild(dim);
-
-            var panel = new PanelContainer
-            {
-                Position = viewportSize / 2f - new Vector2(560f, 420f),
-                CustomMinimumSize = new Vector2(1120f, 840f)
-            };
-            layer.AddChild(panel);
-
-            var margin = new MarginContainer();
-            margin.AddThemeConstantOverride("margin_left", 40);
-            margin.AddThemeConstantOverride("margin_right", 40);
-            margin.AddThemeConstantOverride("margin_top", 28);
-            margin.AddThemeConstantOverride("margin_bottom", 24);
-            panel.AddChild(margin);
-
-            var root = new VBoxContainer();
-            root.AddThemeConstantOverride("separation", 14);
-            margin.AddChild(root);
-
-            root.AddChild(MakeLabel("IF成就", 52, Colors.Gold));
-            root.AddChild(MakeLabel("记录你在各个 IF 线与关键事件中抵达过的分支。", 24, new Color(0.7f, 0.75f, 0.85f)));
-
-            var scroll = new ScrollContainer
-            {
-                SizeFlagsVertical = Control.SizeFlags.ExpandFill,
-                CustomMinimumSize = new Vector2(0f, 600f)
-            };
-            root.AddChild(scroll);
-            var list = new VBoxContainer
-            {
-                SizeFlagsHorizontal = Control.SizeFlags.ExpandFill
-            };
-            list.AddThemeConstantOverride("separation", 10);
-            scroll.AddChild(list);
-
-            list.AddChild(MakeLabel("—— 结局成就 ——", 30, new Color(0.55f, 0.75f, 0.95f)));
-            foreach (var achievement in EndingAchievements)
-                list.AddChild(MakeAchievementRow(achievement));
-            list.AddChild(MakeLabel("—— 事件成就 ——", 30, new Color(0.55f, 0.75f, 0.95f)));
-            foreach (var achievement in EventAchievements)
-                list.AddChild(MakeAchievementRow(achievement));
-
-            var closeButton = new Button { Text = "关闭", CustomMinimumSize = new Vector2(160f, 56f) };
-            closeButton.Pressed += () =>
-            {
-                if (GodotObject.IsInstanceValid(layer))
-                    layer.QueueFree();
-            };
-            var center = new CenterContainer();
-            center.AddChild(closeButton);
-            root.AddChild(center);
+            var collection = stack.GetSubmenuType<NRelicCollection>();
+            IfAchievementRelicCollection.Arm(collection);
+            stack.Push(collection);
         }
         catch (Exception exception)
         {
-            if (layer is not null && GodotObject.IsInstanceValid(layer))
-                layer.QueueFree();
-            ModLog.Write($"IF achievement panel failed: {exception}");
+            ModLog.Write($"IF achievement collection failed to open: {exception}");
         }
     }
+}
 
-    private static Label MakeLabel(string text, int size, Color color)
+// IF 成就页复用原生 NRelicCollection：页面背景、滚动条、分组标题、遗物格、
+// 未发现遮罩、悬浮提示和返回按钮全部沿用游戏实现，只替换本次打开时的数据源。
+internal static class IfAchievementRelicCollection
+{
+    private static readonly MethodInfo ClearRelicsMethod =
+        AccessTools.Method(typeof(NRelicCollection), "ClearRelics")
+        ?? throw new MissingMethodException(typeof(NRelicCollection).FullName, "ClearRelics");
+    private static readonly MethodInfo LoadSubcategoryMethod =
+        AccessTools.Method(typeof(NRelicCollectionCategory), "LoadSubcategory")
+        ?? throw new MissingMethodException(typeof(NRelicCollectionCategory).FullName, "LoadSubcategory");
+    private static readonly MethodInfo GetModelMethod =
+        AccessTools.Method(typeof(ModelDb), "Get", new[] { typeof(Type) })
+        ?? throw new MissingMethodException(typeof(ModelDb).FullName, "Get(Type)");
+    private static NRelicCollection? _armedCollection;
+
+    public static void Arm(NRelicCollection collection)
     {
-        var label = new Label { Text = text };
-        label.AddThemeFontSizeOverride("font_size", size);
-        label.AddThemeColorOverride("font_color", color);
-        return label;
+        _armedCollection = collection;
     }
 
-    private static Control MakeAchievementRow(Achievement achievement)
+    public static bool IsArmed(NRelicCollection collection) =>
+        ReferenceEquals(_armedCollection, collection);
+
+    public static Task Load(NRelicCollection collection)
     {
-        var unlocked = IsUnlocked(achievement.Id);
-        var row = new HBoxContainer();
-        row.AddThemeConstantOverride("separation", 18);
+        ClearRelicsMethod.Invoke(collection, null);
 
-        var mark = MakeLabel(unlocked ? "★" : "☆", 34, unlocked ? Colors.Gold : new Color(0.45f, 0.45f, 0.5f));
-        row.AddChild(mark);
+        var categories = GetCategories(collection);
+        foreach (var category in categories)
+            category.Visible = false;
 
-        var column = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
-        // 未解锁时不透露成就名称和触发条件，整行只显示一个“？？？”。
-        var name = MakeLabel(unlocked ? achievement.Name : "？？？", 30,
-            unlocked ? Colors.Gold : new Color(0.62f, 0.62f, 0.66f));
-        column.AddChild(name);
-        if (unlocked)
+        PopulateCategory(collection, categories[0], "RBD_IF_ENDINGS.title", IfAchievements.EndingAchievements);
+        PopulateCategory(collection, categories[1], "RBD_IF_EVENTS.title", IfAchievements.EventAchievements);
+
+        foreach (var scroll in collection.FindChildren("*", nameof(ScrollContainer), true, false).OfType<ScrollContainer>())
+            scroll.ScrollVertical = 0;
+
+        ModLog.Write("Opened IF achievements with the native relic-collection layout.");
+        return Task.CompletedTask;
+    }
+
+    public static void PrepareNative(NRelicCollection collection)
+    {
+        foreach (var category in GetCategories(collection))
+            category.Visible = true;
+    }
+
+    public static void OnClosed(NRelicCollection collection)
+    {
+        if (!ReferenceEquals(_armedCollection, collection))
+            return;
+
+        _armedCollection = null;
+        PrepareNative(collection);
+    }
+
+    public static IfAchievements.Achievement? GetAchievementFor(RelicModel relic) =>
+        _armedCollection is null
+            ? null
+            : IfAchievements.EndingAchievements
+                .Concat(IfAchievements.EventAchievements)
+                .FirstOrDefault(achievement => achievement.DisplayRelicType == relic.GetType());
+
+    private static NRelicCollectionCategory[] GetCategories(NRelicCollection collection)
+    {
+        var categories = new[]
         {
-            var description = MakeLabel(achievement.Description, 22, new Color(0.85f, 0.87f, 0.92f));
-            column.AddChild(description);
-        }
-        row.AddChild(column);
-        return row;
+            collection.GetNodeOrNull<NRelicCollectionCategory>("%Starter"),
+            collection.GetNodeOrNull<NRelicCollectionCategory>("%Common"),
+            collection.GetNodeOrNull<NRelicCollectionCategory>("%Uncommon"),
+            collection.GetNodeOrNull<NRelicCollectionCategory>("%Rare"),
+            collection.GetNodeOrNull<NRelicCollectionCategory>("%Shop"),
+            collection.GetNodeOrNull<NRelicCollectionCategory>("%Ancient"),
+            collection.GetNodeOrNull<NRelicCollectionCategory>("%Event"),
+        };
+
+        if (categories.Any(category => category is null))
+            throw new InvalidOperationException("The native relic-collection categories are unavailable.");
+
+        return categories!;
+    }
+
+    private static void PopulateCategory(
+        NRelicCollection collection,
+        NRelicCollectionCategory category,
+        string titleLocKey,
+        IReadOnlyList<IfAchievements.Achievement> achievements)
+    {
+        category.Visible = true;
+        var models = achievements
+            .Select(achievement => GetModelMethod.Invoke(null, new object[] { achievement.DisplayRelicType }) as RelicModel
+                ?? throw new InvalidOperationException($"Achievement display relic is unavailable: {achievement.DisplayRelicType.FullName}"))
+            .ToList();
+
+        // LoadSubcategory 的两个集合依次表示“已见过”和“当前可解锁”。
+        // 所有成就都属于可解锁项；只有真正达成的进入“已见过”集合，其他项
+        // 因而使用原生 NotSeen 外观与“？？？”悬浮文字，而不是泄露名称。
+        var visibleModels = achievements
+            .Select((achievement, index) => (achievement, model: models[index]))
+            .Where(pair => IfAchievements.IsUnlocked(pair.achievement.Id))
+            .Select(pair => pair.model)
+            .ToHashSet();
+        var availableModels = models.ToHashSet();
+
+        LoadSubcategoryMethod.Invoke(category, new object[]
+        {
+            collection,
+            new LocString("relics", titleLocKey),
+            models,
+            visibleModels,
+            availableModels,
+        });
+
+    }
+}
+
+[HarmonyPatch(typeof(NRelicCollection), "LoadRelics")]
+internal static class IfAchievementRelicCollectionLoadPatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(NRelicCollection __instance, ref Task __result)
+    {
+        IfAchievementRelicCollection.PrepareNative(__instance);
+        if (!IfAchievementRelicCollection.IsArmed(__instance))
+            return true;
+
+        __result = IfAchievementRelicCollection.Load(__instance);
+        return false;
+    }
+}
+
+[HarmonyPatch(typeof(NRelicCollection), nameof(NRelicCollection.OnSubmenuClosed))]
+internal static class IfAchievementRelicCollectionClosePatch
+{
+    [HarmonyPostfix]
+    private static void Postfix(NRelicCollection __instance) =>
+        IfAchievementRelicCollection.OnClosed(__instance);
+}
+
+[HarmonyPatch(typeof(RelicModel), nameof(RelicModel.Title), MethodType.Getter)]
+internal static class IfAchievementRelicTitlePatch
+{
+    [HarmonyPostfix]
+    private static void Postfix(RelicModel __instance, ref LocString __result)
+    {
+        var achievement = IfAchievementRelicCollection.GetAchievementFor(__instance);
+        if (achievement is not null)
+            __result = new LocString("relics", achievement.TitleLocKey);
+    }
+}
+
+[HarmonyPatch(typeof(RelicModel), nameof(RelicModel.DynamicDescription), MethodType.Getter)]
+internal static class IfAchievementRelicDescriptionPatch
+{
+    [HarmonyPostfix]
+    private static void Postfix(RelicModel __instance, ref LocString __result)
+    {
+        var achievement = IfAchievementRelicCollection.GetAchievementFor(__instance);
+        if (achievement is not null)
+            __result = new LocString("relics", achievement.DescriptionLocKey);
     }
 }
 
@@ -268,7 +355,7 @@ internal static class CompendiumIfAchievementsButtonPatch
             var parent = statisticsButton.GetParent();
             parent.AddChild(button);
             button.Connect(NClickableControl.SignalName.Released,
-                Callable.From<NButton>(_ => IfAchievements.ShowPanel()));
+                Callable.From<NButton>(_ => IfAchievements.ShowPanel(__instance)));
 
             // 克隆按钮沿用统计按钮的布局：纵向与统计按钮并排由容器接管，
             // 手动把它排到运行历史按钮的右侧。

@@ -49,6 +49,12 @@ internal static class AbandonRunVideo
         OttoAcceptanceState.Clear();
     }
 
+    // 事件使用标记在接受与拒绝两条路都会写入；只有接受分支会留下
+    // OttoAcceptanceState，因此两者合起来即可可靠识别“拒绝奥托”状态，
+    // 也能兼容已经在旧版本完成拒绝、但尚未开新局的存档。
+    internal static bool WasRejectedForRun(SerializableRun checkpoint) =>
+        WasUsedForRun(checkpoint) && !OttoAcceptanceState.IsPending;
+
     public static bool TryBegin(out SerializableRun checkpoint)
     {
         checkpoint = null!;

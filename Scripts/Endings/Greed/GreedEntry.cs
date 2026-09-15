@@ -123,10 +123,17 @@ internal static class TombstoneEntry
     // （试验选项替换金币选项、标题改名）。在墓碑点击时置位，
     // 地图重新打开（事件结束/新的一层）时清除。
     private static int _specialFlowerActive;
+    private static int _specialGreedOnly;
 
     public static bool SpecialFlowerActive => Volatile.Read(ref _specialFlowerActive) != 0;
 
-    public static void ClearSpecialFlower() => Volatile.Write(ref _specialFlowerActive, 0);
+    public static bool SpecialGreedOnly => Volatile.Read(ref _specialGreedOnly) != 0;
+
+    public static void ClearSpecialFlower()
+    {
+        Volatile.Write(ref _specialFlowerActive, 0);
+        Volatile.Write(ref _specialGreedOnly, 0);
+    }
 
     // 沙堡按钮当前是否可见（仅地图打开期间有意义）。
     internal static bool IsButtonVisible =>
@@ -138,11 +145,12 @@ internal static class TombstoneEntry
         {
             var runManager = RunManager.Instance;
             var state = runManager?.DebugOnlyGetState();
+            var specialOpen = state is not null && IsOttoRejectEchidnaOpen(state);
+            var normalOpen = state is not null && Act2AncientState.IsDone && IsTombstoneOpen(state);
             var shouldShow = runManager is { IsSingleplayerOrFakeMultiplayer: true } &&
                 state is not null &&
                 state.CurrentActIndex == GreedActIndex &&
-                Act2AncientState.IsDone &&
-                IsTombstoneOpen(state);
+                (normalOpen || specialOpen);
 
             if (_button is not null && GodotObject.IsInstanceValid(_button))
             {
@@ -286,6 +294,23 @@ internal static class TombstoneEntry
         return hp <= 5;
     }
 
+    // 拒绝奥托后，原本的“死档”在第二层受伤预算达到 5 时打开一条隐藏
+    // 的艾姬多娜入口。它不要求先完成第二层先古事件，且强欲之心已经拿到
+    // 后不再重复出现。
+    private static bool IsOttoRejectEchidnaOpen(RunState? state)
+    {
+        if (state is null || state.CurrentActIndex != GreedActIndex ||
+            !CheckpointStore.TryLoad(out var checkpoint) ||
+            !AbandonRunVideo.WasRejectedForRun(checkpoint))
+            return false;
+
+        var player = state.Players.FirstOrDefault();
+        if (player is null || player.Relics.Any(relic => relic is HeartOfGreed))
+            return false;
+
+        return CheckpointStore.CurseBudget.Current.Injuries >= 5;
+    }
+
     // 作为图例的一部分挂在 LegendItems 里：尺寸与位置对齐现有图例条目，
     // 排在其列表末尾。若 LegendItems 本身是布局容器，则由容器接管排列。
     private static void UpdateLayout()
@@ -345,8 +370,12 @@ internal static class TombstoneEntry
         _entering = true;
         try
         {
-            ModLog.Write("Tombstone pressed; entering the placeholder Colossal Flower event.");
+            var specialGreedOnly = IsOttoRejectEchidnaOpen(state);
+            ModLog.Write(specialGreedOnly
+                ? "Tombstone pressed after rejecting Otto; entering the direct Greed branch."
+                : "Tombstone pressed; entering the placeholder Colossal Flower event.");
             Volatile.Write(ref _specialFlowerActive, 1);
+            Volatile.Write(ref _specialGreedOnly, specialGreedOnly ? 1 : 0);
             await runManager.FadeOut();
             NMapScreen.Instance?.Close(animateOut: false);
             runManager.CombatStateSynchronizer.StartSync();

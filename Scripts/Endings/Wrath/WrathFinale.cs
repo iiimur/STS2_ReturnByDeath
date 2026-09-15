@@ -28,6 +28,9 @@ internal static class WrathFinaleState
             return;
         }
 
+        IfAchievements.Unlock("wrath_ending");
+        ModLog.Write("Wrath finale reached: the final Architect Continue was chosen; wrath_ending unlocked.");
+
         // 只把音频启动延后；原版 WinRun 的建筑师攻击与胜利结算立即继续，
         // 不会被这次暂停拖慢。
         _ = StartAudioAfterDelayAsync();
