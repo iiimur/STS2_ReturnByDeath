@@ -63,8 +63,7 @@ internal static class TombstoneEntry
             public bool Done { get; set; }
         }
 
-        private static readonly string StatePath = Path.Combine(
-            ModLog.ModDirectory, "return-by-death.act2-ancient.json");
+        private static readonly string StatePath = ModLog.StateFile("return-by-death.act2-ancient.json");
         private static readonly object Sync = new();
 
         public static bool IsDone
@@ -135,6 +134,15 @@ internal static class TombstoneEntry
         Volatile.Write(ref _specialGreedOnly, 0);
     }
 
+    // 路线一旦开启，墓碑入口立即失效，不等待下一次地图重建。
+    // 这也覆盖控制台测试或同一帧内路线状态变化的情况。
+    internal static void HideForIfRoute()
+    {
+        ClearSpecialFlower();
+        if (_button is not null && GodotObject.IsInstanceValid(_button))
+            _button.Visible = false;
+    }
+
     // 沙堡按钮当前是否可见（仅地图打开期间有意义）。
     internal static bool IsButtonVisible =>
         _button is not null && GodotObject.IsInstanceValid(_button) && _button.Visible;
@@ -145,8 +153,11 @@ internal static class TombstoneEntry
         {
             var runManager = RunManager.Instance;
             var state = runManager?.DebugOnlyGetState();
-            var specialOpen = state is not null && IsOttoRejectEchidnaOpen(state);
-            var normalOpen = state is not null && Act2AncientState.IsDone && IsTombstoneOpen(state);
+            // 艾姬多娜入口优先级最低：任何 IF 线一旦开始，按钮永久隐藏，
+            // 包括拒绝奥托后的特殊分支，不能再绕过路线互斥规则。
+            var anyIfRoute = RouteState.IsIfRoute || GreedRoute.IsActive;
+            var specialOpen = !anyIfRoute && state is not null && IsOttoRejectEchidnaOpen(state);
+            var normalOpen = !anyIfRoute && state is not null && Act2AncientState.IsDone && IsTombstoneOpen(state);
             var shouldShow = runManager is { IsSingleplayerOrFakeMultiplayer: true } &&
                 state is not null &&
                 state.CurrentActIndex == GreedActIndex &&
@@ -342,6 +353,17 @@ internal static class TombstoneEntry
         if (_entering)
             return;
 
+        if (RouteState.IsIfRoute || GreedRoute.IsActive)
+        {
+            // 防止按钮已经在屏幕上时路线刚好于同一帧开启，直接点击
+            // 绕过 Ensure 的隐藏刷新。
+            ClearSpecialFlower();
+            if (_button is not null && GodotObject.IsInstanceValid(_button))
+                _button.Visible = false;
+            ModLog.Write("Echidna entry blocked: an IF route is already active.");
+            return;
+        }
+
         var runManager = RunManager.Instance;
         var state = runManager?.DebugOnlyGetState();
         if (runManager is null || state is null || state.CurrentActIndex != GreedActIndex)
@@ -410,8 +432,7 @@ internal static class EchidnaVisitState
         public bool Visited { get; set; }
     }
 
-    private static readonly string StatePath = Path.Combine(
-        ModLog.ModDirectory, "return-by-death.echidna-visit.json");
+    private static readonly string StatePath = ModLog.StateFile("return-by-death.echidna-visit.json");
     private static readonly object Sync = new();
 
     public static bool HasVisited

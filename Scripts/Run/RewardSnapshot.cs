@@ -14,9 +14,7 @@ internal static class RewardSnapshotStore
     }
 
     private static readonly object Sync = new();
-    private static readonly string SnapshotPath = Path.Combine(
-        ModLog.ModDirectory,
-        "return-by-death.reward-snapshot.json");
+    private static readonly string SnapshotPath = ModLog.StateFile("return-by-death.reward-snapshot.json");
     private static SnapshotFile? _file;
     private static readonly Dictionary<string, int> ConsumedCounts = new();
     private static readonly HashSet<string> SessionCapturedKeys = new();

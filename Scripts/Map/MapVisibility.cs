@@ -285,9 +285,7 @@ internal static class ExploredNodesMemory
     }
 
     private static readonly object Sync = new();
-    private static readonly string MemoryPath = Path.Combine(
-        ModLog.ModDirectory,
-        "deathless-run.explored-nodes.json");
+    private static readonly string MemoryPath = ModLog.StateFile("deathless-run.explored-nodes.json");
     private static MemoryFile? _file;
     private static readonly System.Reflection.FieldInfo? PointCoordField =
         AccessTools.Field(typeof(MapPoint), "coord");

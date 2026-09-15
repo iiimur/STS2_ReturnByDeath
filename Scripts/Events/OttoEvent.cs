@@ -32,9 +32,7 @@ internal static class OttoPendingCleanup
     private const string MarkerContent = "return-by-death-otto-pending-cleanup-v1";
     // 接受奥托重载后，等页面稳定可见再展示回血与删牌动画；需要调手感时只改这里。
     private const double PostLoadCleanupDelaySeconds = 2.0d;
-    private static readonly string MarkerPath = Path.Combine(
-        ModLog.ModDirectory,
-        "return-by-death.otto-pending-cleanup");
+    private static readonly string MarkerPath = ModLog.StateFile("return-by-death.otto-pending-cleanup");
     private static int _applying;
 
     public static void Mark()
@@ -149,9 +147,7 @@ internal static class OttoPendingCleanup
 internal static class OttoSettlementCheckpoint
 {
     private const string MarkerContent = "return-by-death-otto-checkpoint-pending-v1";
-    private static readonly string MarkerPath = Path.Combine(
-        ModLog.ModDirectory,
-        "return-by-death.otto-checkpoint-pending");
+    private static readonly string MarkerPath = ModLog.StateFile("return-by-death.otto-checkpoint-pending");
 
     public static void MarkPending()
     {

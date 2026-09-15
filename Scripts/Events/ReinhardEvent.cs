@@ -426,38 +426,40 @@ internal static class ReinhardEventState
             if (state is null)
                 return;
 
+            // 只把本场战斗结束时仍在牌组中的一张愧疚变成莱茵哈鲁特：
+            // 选择 CombatsSeen 最大者；并列时取枚举到的任意一张。这样
+            // 一次保命事件最多只会留下一个莱茵哈鲁特，其他愧疚继续保留，
+            // 也保留了“愧疚已在结算期间被删除就不处理”的现有行为。
+            var candidates = state.Players
+                .SelectMany(player => player.Deck.Cards
+                    .OfType<Guilty>()
+                    .Select(card => (Player: player, Card: card)))
+                .OrderByDescending(candidate => candidate.Card.CombatsSeen)
+                .ToList();
             var converted = 0;
-            foreach (var player in state.Players)
+            if (candidates.Count > 0)
             {
-                var guilty = player.Deck.Cards.Where(card => card is Guilty).ToArray();
-                if (guilty.Length == 0)
-                    continue;
-
-                // 使用原版 CardCmd.Transform：它会负责从原牌堆移除、按原位置
-                // 放入替换卡，并播放 NCardTransformVfx 的完整变牌动画。
-                foreach (var guiltyCard in guilty)
+                var candidate = candidates[0];
+                var replacement = state.CreateCard<ReinhardCard>(candidate.Player);
+                replacement.CombatsSeen = candidate.Card.CombatsSeen;
+                Volatile.Write(ref _conversionVisualActive, 1);
+                try
                 {
-                    var replacement = state.CreateCard<ReinhardCard>(player);
-                    replacement.CombatsSeen = guiltyCard is Guilty guiltyCardModel
-                        ? guiltyCardModel.CombatsSeen
-                        : 0;
-                    Volatile.Write(ref _conversionVisualActive, 1);
-                    try
-                    {
-                        var result = await CardCmd.Transform(
-                            guiltyCard,
-                            replacement,
-                            // None 会连同原版 NCardTransformVfx 一起跳过，导致动画消失。
-                            // EventLayout 使用事件页容器，视觉中心会偏移；
-                            // HorizontalLayout 保留原版变牌特效，并使用全局横向预览容器。
-                            CardPreviewStyle.HorizontalLayout);
-                        if (result.HasValue && result.Value.success)
-                            converted++;
-                    }
-                    finally
-                    {
-                        Volatile.Write(ref _conversionVisualActive, 0);
-                    }
+                    // 使用原版 CardCmd.Transform：它会负责从原牌堆移除、按原位置
+                    // 放入替换卡，并播放 NCardTransformVfx 的完整变牌动画。
+                    var result = await CardCmd.Transform(
+                        candidate.Card,
+                        replacement,
+                        // None 会连同原版 NCardTransformVfx 一起跳过，导致动画消失。
+                        // EventLayout 使用事件页容器，视觉中心会偏移；
+                        // HorizontalLayout 保留原版变牌特效，并使用全局横向预览容器。
+                        CardPreviewStyle.HorizontalLayout);
+                    if (result.HasValue && result.Value.success)
+                        converted = 1;
+                }
+                finally
+                {
+                    Volatile.Write(ref _conversionVisualActive, 0);
                 }
             }
 

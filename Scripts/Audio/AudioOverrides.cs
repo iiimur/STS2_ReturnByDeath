@@ -206,8 +206,9 @@ internal static class GameOverMusicPatch
     }
 }
 
-// NRunMusicController 是每局流程背景音乐的入口。专属音乐期间只跳过它的
-// BGM 更新，并仍调用 UpdateAmbience，因此环境音和所有 PlayOneShot 音效不受影响。
+// NRunMusicController 是每局流程背景音乐的入口。奥托专属音乐现在不再拦截
+// 原生 BGM 更新，只在附加视频/音乐期间由 NativeBgmDucker 压低 BGM 音量；
+// 环境音和所有 PlayOneShot 音效保持原生音量。
 [HarmonyPatch(typeof(NGame), "LoadRun")]
 internal static class EncounterPreviewLoadPatch
 {

@@ -41,8 +41,7 @@ public sealed class OttoCard : CardModel
 
 internal static class OttoAcceptanceState
 {
-    private static readonly string Path = System.IO.Path.Combine(
-        ModLog.ModDirectory, "return-by-death.otto-accepted");
+    private static readonly string Path = ModLog.StateFile("return-by-death.otto-accepted");
     private const string Content = "return-by-death-otto-accepted-v1";
 
     public static bool IsPending

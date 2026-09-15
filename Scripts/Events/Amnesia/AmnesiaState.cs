@@ -43,9 +43,7 @@ internal static class AmnesiaState
     }
 
     private static readonly object Sync = new();
-    private static readonly string FilePath = Path.Combine(
-        ModLog.ModDirectory,
-        "return-by-death.amnesia.json");
+    private static readonly string FilePath = ModLog.StateFile("return-by-death.amnesia.json");
     private static AmnesiaFile? _file;
 
     private static AmnesiaFile EnsureLoaded()

@@ -72,6 +72,15 @@ internal static class ReinhardRemovalTracking
     public static async Task ShowPrideEndingAfterRemovalAsync(Task nativeRemoval)
     {
         await nativeRemoval;
+
+        // 任何 IF 线都只能独立成立。莱茵哈鲁特可能在强欲线开启后才
+        // 被其他效果移除，此时不能再把同一局切换成傲慢线。
+        if (RouteState.IsIfRoute || GreedRoute.IsActive)
+        {
+            ModLog.Write("Pride ending skipped: another IF route is already active.");
+            return;
+        }
+
         await EnterPrideAsync(playPresentation: true);
     }
 
@@ -208,7 +217,10 @@ internal static class ReinhardSingleDeckRemovalPridePatch
 {
     [HarmonyPrefix]
     private static void Prefix(CardModel card, out bool __state) =>
-        __state = card is ReinhardCard && !ReinhardRemovalTracking.IsAutomaticRemoval;
+        __state = card is ReinhardCard &&
+                  !ReinhardRemovalTracking.IsAutomaticRemoval &&
+                  !RouteState.IsIfRoute &&
+                  !GreedRoute.IsActive;
 
     [HarmonyPostfix]
     private static void Postfix(bool __state, ref Task __result)
@@ -225,6 +237,8 @@ internal static class ReinhardMultipleDeckRemovalPridePatch
     [HarmonyPrefix]
     private static void Prefix(IReadOnlyList<CardModel> cards, out bool __state) =>
         __state = !ReinhardRemovalTracking.IsAutomaticRemoval &&
+                  !RouteState.IsIfRoute &&
+                  !GreedRoute.IsActive &&
                   cards.Any(card => card is ReinhardCard);
 
     [HarmonyPostfix]

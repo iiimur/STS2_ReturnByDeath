@@ -59,8 +59,7 @@ internal static class IfAchievements
         }
     }
 
-    private static readonly string StatePath = Path.Combine(
-        ModLog.ModDirectory, "return-by-death.if-achievements.json");
+    private static readonly string StatePath = ModLog.StateFile("return-by-death.if-achievements.json");
     private static readonly object Sync = new();
     private static HashSet<string>? _unlocked;
 

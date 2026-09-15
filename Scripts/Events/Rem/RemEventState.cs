@@ -65,7 +65,7 @@ internal static class RemEventState
         "在意我这样的人，真的没问题吗",
         ""
     };
-    private static readonly string StatePath = Path.Combine(ModLog.ModDirectory, "return-by-death.rem-state.json");
+    private static readonly string StatePath = ModLog.StateFile("return-by-death.rem-state.json");
 
     private static readonly object Sync = new();
     private static RemFile? _file;
@@ -134,6 +134,16 @@ internal static class RemEventState
         var stage = GetPendingStage();
         if (stage > 0)
         {
+            if (RouteState.IsIfRoute || GreedRoute.IsActive)
+            {
+                // 路线在弹窗未完成期间被其他入口开启时，不能通过旧的
+                // PendingStage 再次把蕾姆事件续上。
+                SetPendingStage(0);
+                ClosePauseMenu();
+                ModLog.Write("Rem event resume blocked: an IF route is already active.");
+                return true;
+            }
+
             // 未决分支重入：直接回到当前确认窗（或选卡页）。
             Volatile.Write(ref _flowRunning, 1);
             ClosePauseMenu();
@@ -352,11 +362,19 @@ internal static class RemEventState
     }
 
     internal static bool IsRewardCardBeingRemoved(CardModel? card) =>
+        !RouteState.IsIfRoute &&
+        !GreedRoute.IsActive &&
         card is not null && card.Pile?.Type == PileType.Deck && IsRewardCostCard(card);
 
     // 原生删牌任务成功结束后只消费一次奖励牌身份，再进入愤怒线。
     internal static bool CompleteRewardCardRemoval()
     {
+        if (RouteState.IsIfRoute || GreedRoute.IsActive)
+        {
+            ModLog.Write("Wrath trigger skipped: another IF route is already active.");
+            return false;
+        }
+
         lock (Sync)
         {
             var file = EnsureLoaded();
@@ -438,7 +456,7 @@ internal static class RemEventState
         lock (Sync)
         {
             var file = EnsureLoaded();
-            if (file.Used || RouteState.IsIfRoute || RouteState.IsSlothRoute)
+            if (file.Used || RouteState.IsIfRoute || GreedRoute.IsActive)
                 return false;
         }
 
@@ -622,6 +640,7 @@ internal static class RemEventState
 
             var relic = await RelicCmd.Obtain<HeartOfSloth>(player);
             CheckpointStore.RecordEchidnaRelic(relic, player);
+            await MergeRelicIntoRestSiteHistoryAsync(relic, player);
             ModLog.Write("Sloth IF route entered; Heart of Sloth granted and persisted.");
         }
         catch (Exception exception)
@@ -808,6 +827,119 @@ internal static class RemEventState
     }
 
 
+    // 回归落在已休息的第一层火堆时，原版 LoadRun 会在原有 HEAL 条目后
+    // 追加一条同一房间的“落地副本”。蕾姆流程发生在房间外，不能让这条副本
+    // 变成新的地图历史节点；把它合并回 HEAL 条目后，后续节点下标保持不变。
+    private static bool TryGetRestSiteHistoryStats(
+        RunState state,
+        Player owner,
+        out List<MapPointHistoryEntry> history,
+        out PlayerMapPointHistoryEntry stats)
+    {
+        history = null!;
+        stats = null!;
+        if (state.CurrentActIndex != 0 || state.MapPointHistory.Count == 0)
+            return false;
+
+        if (state.MapPointHistory[0] is not List<MapPointHistoryEntry> mutableHistory)
+            return false;
+
+        history = mutableHistory;
+        var fireIndex = history.FindLastIndex(entry =>
+            entry.HasRoomOfType(RoomType.RestSite) &&
+            entry.PlayerStats.Any(playerStats => playerStats.RestSiteChoices.Contains("HEAL")));
+        if (fireIndex < 0)
+            return false;
+
+        // 只移除紧跟在原火堆后的同内容落地副本；不会触碰真正已经前进过的
+        // 后续房间，也不会误删玩家正常走到的另一个火堆。
+        while (fireIndex + 1 < history.Count &&
+               IsRestSiteLandingDuplicate(history[fireIndex], history[fireIndex + 1]))
+        {
+            history.RemoveAt(fireIndex + 1);
+        }
+
+        var fire = history[fireIndex];
+        stats = fire.PlayerStats.FirstOrDefault(playerStats => playerStats.PlayerId == owner.NetId)
+            ?? fire.PlayerStats.FirstOrDefault()!;
+        return stats is not null;
+    }
+
+    private static async Task MergeCardIntoRestSiteHistoryAsync(CardModel card, Player owner)
+    {
+        try
+        {
+            var state = RunManager.Instance?.DebugOnlyGetState();
+            if (state is null || !TryGetRestSiteHistoryStats(state, owner, out _, out var stats))
+                return;
+
+            var serialized = card.ToSerializable();
+            if (!stats.CardsGained.Any(existing =>
+                    existing.Id == serialized.Id &&
+                    existing.CurrentUpgradeLevel == serialized.CurrentUpgradeLevel &&
+                    existing.FloorAddedToDeck == serialized.FloorAddedToDeck))
+            {
+                stats.CardsGained.Add(serialized);
+            }
+
+            await SaveManager.Instance.SaveRun(state.CurrentRoom, true);
+            ModLog.Write($"Rem reward merged into the act-1 rest-site history: card={card.Id}.");
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Rem card history merge failed: {exception}");
+        }
+    }
+
+    private static async Task MergeRelicIntoRestSiteHistoryAsync(RelicModel relic, Player owner)
+    {
+        try
+        {
+            var state = RunManager.Instance?.DebugOnlyGetState();
+            if (state is null || !TryGetRestSiteHistoryStats(state, owner, out _, out var stats))
+                return;
+
+            var alreadyRecorded = stats.RelicChoices.Any(choice =>
+            {
+                var id = AccessTools.Field(choice.GetType(), "choice")?.GetValue(choice);
+                return id is ModelId modelId && modelId == relic.Id;
+            });
+            if (!alreadyRecorded)
+                stats.RelicChoices.Add(new ModelChoiceHistoryEntry(relic.Id, true));
+
+            await SaveManager.Instance.SaveRun(state.CurrentRoom, true);
+            ModLog.Write($"Rem reward merged into the act-1 rest-site history: relic={relic.Id}.");
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Rem relic history merge failed: {exception}");
+        }
+    }
+
+    private static bool IsRestSiteLandingDuplicate(
+        MapPointHistoryEntry previous,
+        MapPointHistoryEntry candidate)
+    {
+        if (!previous.HasRoomOfType(RoomType.RestSite) ||
+            !candidate.HasRoomOfType(RoomType.RestSite) ||
+            !previous.PlayerStats.Any(stats => stats.RestSiteChoices.Count > 0) ||
+            candidate.PlayerStats.Any(stats => stats.RestSiteChoices.Count > 0) ||
+            previous.MapPointType != candidate.MapPointType ||
+            previous.Rooms.Count != candidate.Rooms.Count)
+            return false;
+
+        for (var i = 0; i < previous.Rooms.Count; i++)
+        {
+            var left = previous.Rooms[i];
+            var right = candidate.Rooms[i];
+            if (left.RoomType != right.RoomType ||
+                left.ModelId != right.ModelId)
+                return false;
+        }
+
+        return true;
+    }
+
     // 复制卡奖励：选卡池为“该角色全卡池中的稀有卡”，全部以升级形态和
     // 数字费用固定为 0（X 费保持原样），只选 1 张加入牌组。选卡 UI 走原版奖励网格
     // （与“奶酪房间”事件同一条通道），未选中的实例随后废弃。
@@ -866,6 +998,7 @@ internal static class RemEventState
             if (addResult.success && addResult.cardAdded is { } added)
             {
                 MarkRewardCard(added, player);
+                await MergeCardIntoRestSiteHistoryAsync(added, player);
                 ModLog.Write($"Rem reward: added upgraded rare card {added.Id}; numeric cost is permanently zero and X cost is unchanged.");
             }
         }

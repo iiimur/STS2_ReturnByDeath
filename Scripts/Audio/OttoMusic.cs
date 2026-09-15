@@ -2,9 +2,8 @@
 
 namespace ReturnByDeath;
 
-// 接受奥托后的专属 BGM。它只接管 NRunMusicController 的背景音乐更新；
-// 音效和环境音仍由原版音频系统处理。状态仅保存在进程内，因此退出游戏后
-// 不会把专属 BGM 写入存档，下次进入将自然恢复原版音乐。
+// 接受奥托后的专属 BGM。原版 FMOD 背景音乐不再被停止或抑制，只通过
+// NAudioManager 的 BGM 音量接口压低到 20%；附加音乐/视频播放完毕后再恢复。
 internal static class OttoAcceptanceMusic
 {
     private const string MusicFileName = "接受奥托.ogg";
@@ -20,10 +19,20 @@ internal static class OttoAcceptanceMusic
     private static int _pending;
     private static int _active;
     private static int _fading;
-    private static int _nativeMusicRestoreQueued;
+    private static int _nativeBgmDuckHeld;
 
     public static bool IsSuppressingNativeRunMusic =>
         Volatile.Read(ref _pending) != 0 || Volatile.Read(ref _active) != 0;
+
+    public static bool IsActive => Volatile.Read(ref _active) != 0;
+
+    public static bool AcquireNativeBgmDuck() {
+        if (!NativeBgmDucker.Acquire("Otto acceptance music"))
+            return false;
+
+        Volatile.Write(ref _nativeBgmDuckHeld, 1);
+        return true;
+    }
 
     public static void Arm()
     {
@@ -48,30 +57,6 @@ internal static class OttoAcceptanceMusic
             ModLog.Write($"Otto acceptance BGM could not start after reload: {exception}");
             CancelAndRestoreNativeMusic();
         }
-    }
-
-    // 在 NRunMusicController.UpdateMusic 的 Prefix 中调用。手动更新环境音，
-    // 但跳过原版背景音乐选择/播放，避免拦截短音效或环境音。
-    // 例外：拥有专属音乐/音乐参数切换的房间（火堆、商店、宝箱、精英、
-    // BOSS）。专属 BGM 活动期间进火堆曾稳定触发主线程卡死（房间自己的
-    // FMOD 音乐切换与被 StopMusic 掏空的控制器状态叠加），这些房间一律
-    // 提前结束专属 BGM 并放行完全原生的 UpdateMusic。
-    public static bool TrySuppressNativeRunMusic(NRunMusicController controller)
-    {
-        if (!IsSuppressingNativeRunMusic)
-            return false;
-
-        if (RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom is { } room &&
-            room.RoomType is RoomType.RestSite or RoomType.Shop or RoomType.Treasure
-                or RoomType.Elite or RoomType.Boss)
-        {
-            ModLog.Write($"Otto acceptance BGM ended early for the {room.RoomType} room; native music path restored.");
-            CancelAndRestoreNativeMusic();
-            return false;
-        }
-
-        controller.UpdateAmbience();
-        return true;
     }
 
     public static void BeginFadeOut(string reason)
@@ -151,7 +136,6 @@ internal static class OttoAcceptanceMusic
     public static void CancelAndRestoreNativeMusic()
     {
         StopSpecialMusic();
-        RestoreNativeMusic();
     }
 
     public static void StopImmediately()
@@ -178,6 +162,10 @@ internal static class OttoAcceptanceMusic
             if (tree?.Root is null)
                 throw new InvalidOperationException("SceneTree root is unavailable for Otto acceptance BGM.");
 
+            if (Volatile.Read(ref _nativeBgmDuckHeld) == 0)
+                AcquireNativeBgmDuck();
+            NativeBgmDucker.Reapply();
+
             _player = new AudioStreamPlayer
             {
                 Name = "ReturnByDeathOttoAcceptanceMusic",
@@ -193,18 +181,6 @@ internal static class OttoAcceptanceMusic
             Volatile.Write(ref _active, 1);
             Volatile.Write(ref _fading, 0);
 
-            // 原版运行音乐与环境音共用控制器，但没有公开的“只停 BGM”方法。
-            // 因此立即重建环境音，只让正在播放的背景音乐被专属曲替换。
-            var musicController = NRunMusicController.Instance;
-            if (musicController is not null && GodotObject.IsInstanceValid(musicController))
-            {
-                musicController.StopMusic();
-                musicController.UpdateAmbience();
-            }
-            else
-            {
-                NAudioManager.Instance?.StopMusic();
-            }
             _player.Play();
             ScheduleNaturalEndFade();
             ModLog.Write($"Started Otto acceptance BGM: {MusicFileName}.");
@@ -247,7 +223,6 @@ internal static class OttoAcceptanceMusic
             return;
 
         StopSpecialMusic();
-        RestoreNativeMusic();
         ModLog.Write($"Otto acceptance BGM ended; restored native music: {reason}.");
     }
 
@@ -268,71 +243,135 @@ internal static class OttoAcceptanceMusic
             _tailFadeTween.Kill();
         _tailFadeTween = null;
 
+        var players = new List<AudioStreamPlayer>();
         if (_player is not null && GodotObject.IsInstanceValid(_player))
+            players.Add(_player);
+
+        // 防御旧版本在重载/异常切换中留下的同名播放器：即使静态引用已经
+        // 被覆盖，也不能让旧 AudioStreamPlayer 继续在后台播放。
+        if (Engine.GetMainLoop() is SceneTree tree && tree.Root is not null)
         {
-            _player.Finished -= OnMusicFinished;
-            _player.Stop();
-            _player.QueueFree();
+            foreach (var node in tree.Root.FindChildren("*OttoAcceptanceMusic*", nameof(AudioStreamPlayer), true, false))
+            {
+                if (node is AudioStreamPlayer player && GodotObject.IsInstanceValid(player) && !players.Contains(player))
+                    players.Add(player);
+            }
+        }
+
+        foreach (var player in players)
+        {
+            player.Finished -= OnMusicFinished;
+            player.Stop();
+            player.QueueFree();
         }
         _player = null;
 
+        if (Interlocked.Exchange(ref _nativeBgmDuckHeld, 0) != 0)
+            NativeBgmDucker.Release("Otto acceptance music finished");
     }
-
-    private static void RestoreNativeMusic()
-    {
-        // 音乐结束可能正好与离开战斗、进入火堆等场景切换重合。
-        // 不在 Tween/Finished 回调中同步调用原版 UpdateMusic，避免和房间
-        // 切换的音频/节点清理流程重入；延后一帧等场景状态稳定后恢复。
-        if (Interlocked.Exchange(ref _nativeMusicRestoreQueued, 1) != 0)
-            return;
-
-        _ = RestoreNativeMusicNextFrameAsync();
-    }
-
-    private static async Task RestoreNativeMusicNextFrameAsync()
-    {
-        try
-        {
-            var tree = Engine.GetMainLoop() as SceneTree;
-            if (tree?.Root is null)
-                return;
-
-            await MegaCrit.Sts2.Core.Nodes.GodotExtensions.NodeUtil.AwaitProcessFrame(
-                tree.Root,
-                System.Threading.CancellationToken.None);
-
-            // 如果下一帧已有新的专属 BGM 状态，则让新的状态继续接管，
-            // 不要把原版音乐插回正在播放的专属曲流程。
-            if (IsSuppressingNativeRunMusic)
-                return;
-
-            var musicController = NRunMusicController.Instance;
-            if (musicController is not null && GodotObject.IsInstanceValid(musicController))
-            {
-                musicController.UpdateMusic();
-                ModLog.Write("Restored native run music on the frame after special BGM cleanup.");
-            }
-        }
-        catch (Exception exception)
-        {
-            ModLog.Write($"Native music restoration after special BGM failed: {exception.Message}");
-        }
-        finally
-        {
-            Volatile.Write(ref _nativeMusicRestoreQueued, 0);
-        }
-    }
-
 }
 
-// Cosmetic audio from AncientFirstVisitSound is kept in the merged mod so
-// the gameplay patches above and the replacement SFX share one Harmony owner.
-[HarmonyPatch(typeof(NRunMusicController), nameof(NRunMusicController.UpdateMusic))]
-internal static class OttoAcceptanceRunMusicPatch
+// 共享的原生 BGM 音量租约。租约计数允许“奥托视频 + 接受后的专属音乐”
+// 交接时保持持续压低；只有最后一个附加内容结束，才恢复玩家原本的 BGM 音量。
+internal static class NativeBgmDucker
 {
-    [HarmonyPrefix]
-    private static bool Prefix(NRunMusicController __instance) =>
-        !OttoAcceptanceMusic.TrySuppressNativeRunMusic(__instance);
+    private const float DuckFactor = 0.2f;
+    private static readonly object Sync = new();
+    private static float? _savedVolume;
+    private static int _leases;
+
+    public static bool Acquire(string reason)
+    {
+        lock (Sync)
+        {
+            try
+            {
+                var settings = SaveManager.Instance?.SettingsSave;
+                if (settings is null)
+                    return false;
+
+                if (_leases == 0)
+                {
+                    _savedVolume = settings.VolumeBgm;
+                    NAudioManager.Instance?.SetBgmVol(_savedVolume.Value * DuckFactor);
+                    ModLog.Write($"Native BGM ducked to 20% of {_savedVolume.Value:0.00}: {reason}.");
+                }
+
+                _leases++;
+                return true;
+            }
+            catch (Exception exception)
+            {
+                ModLog.Write($"Native BGM duck failed: {exception.Message}");
+                return false;
+            }
+        }
+    }
+
+    public static void Release(string reason)
+    {
+        lock (Sync)
+        {
+            if (_leases <= 0)
+                return;
+
+            _leases--;
+            if (_leases != 0)
+                return;
+
+            try
+            {
+                if (_savedVolume is { } volume)
+                    NAudioManager.Instance?.SetBgmVol(volume);
+                ModLog.Write($"Native BGM volume restored: {reason}.");
+            }
+            catch (Exception exception)
+            {
+                ModLog.Write($"Native BGM restore failed: {exception.Message}");
+            }
+            finally
+            {
+                _savedVolume = null;
+            }
+        }
+    }
+
+    public static void Reapply()
+    {
+        lock (Sync)
+        {
+            if (_leases == 0 || _savedVolume is not { } volume)
+                return;
+
+            try
+            {
+                NAudioManager.Instance?.SetBgmVol(volume * DuckFactor);
+            }
+            catch (Exception exception)
+            {
+                ModLog.Write($"Native BGM duck reapply failed: {exception.Message}");
+            }
+        }
+    }
+
+    public static void ForceRestore()
+    {
+        lock (Sync)
+        {
+            if (_leases == 0)
+                return;
+
+            _leases = 1;
+            Release("forced cleanup");
+        }
+    }
+}
+
+[HarmonyPatch(typeof(NRunMusicController), nameof(NRunMusicController.UpdateMusic))]
+internal static class NativeBgmDuckAfterNativeMusicPatch
+{
+    [HarmonyPostfix]
+    private static void Postfix() => NativeBgmDucker.Reapply();
 }
 
 // OfferRoomEndRewards 是原版在战斗胜利后正式进入奖励/结算页面的入口。
@@ -353,6 +392,7 @@ internal static class OttoAcceptanceMainMenuMusicResetPatch
     private static void Prefix()
     {
         OttoAcceptanceMusic.StopImmediately();
+        NativeBgmDucker.ForceRestore();
         CosmeticAudio.Stop();
         RemEventState.OnLeftRun();
     }
@@ -365,6 +405,7 @@ internal static class OttoAcceptanceQuitMusicResetPatch
     private static void Prefix()
     {
         OttoAcceptanceMusic.StopImmediately();
+        NativeBgmDucker.ForceRestore();
         CosmeticAudio.Stop();
         RemEventState.OnLeftRun();
     }

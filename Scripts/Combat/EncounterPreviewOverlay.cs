@@ -497,6 +497,25 @@ internal static class EncounterPreviewOverlay
             return visitedCount > 0 ? visitedCount : null;
         }
 
+        // 未到访节点可能有多个父节点。不能只按列号挑一个父节点：
+        // 路线从“问号”改成“普通怪”后，列号较小的父节点可能属于旧分支，
+        // 会把当前第三个怪错误地回溯到第一个怪。当前所在节点才是这次
+        // 实际路线的锚点；优先寻找从悬浮节点到当前节点的最短父链。
+        if (state.CurrentMapCoord is { } currentCoord &&
+            FindParentPath(node, currentCoord, out var currentPath))
+        {
+            var currentIndex = FindVisitedIndex(state, currentCoord);
+            if (currentIndex >= 0)
+            {
+                var routeConsumed = CountCategoryThrough(
+                    historyByVisit, currentIndex, category);
+                var routeExtra = currentPath
+                    .TakeWhile(point => !SameCoord(point.coord, currentCoord))
+                    .Count(point => GetPointCategories(point.PointType).Contains(category));
+                return routeConsumed + routeExtra;
+            }
+        }
+
         var extra = 0;
         var current = node;
         MapPoint? anchor = null;
@@ -531,6 +550,66 @@ internal static class EncounterPreviewOverlay
 
         return consumed + extra;
     }
+
+    private static int CountCategoryThrough(
+        IReadOnlyList<MapPointHistoryEntry?> history,
+        int lastIndex,
+        string category)
+    {
+        var count = 0;
+        var last = Math.Min(lastIndex, history.Count - 1);
+        for (var i = 0; i <= last; i++)
+        {
+            if (history[i] is { } entry && GetEntryCategories(entry).Contains(category))
+                count++;
+        }
+
+        return count;
+    }
+
+    // 通过父节点图寻找悬浮节点到当前节点的最短路径。地图分叉时，
+    // BFS 比固定按列号回溯更稳定；同层候选仍优先当前节点本身。
+    private static bool FindParentPath(
+        MapPoint start,
+        MapCoord target,
+        out List<MapPoint> path)
+    {
+        path = new List<MapPoint>();
+        var queue = new Queue<List<MapPoint>>();
+        var visited = new HashSet<(int Col, int Row)>();
+        queue.Enqueue(new List<MapPoint> { start });
+
+        while (queue.Count > 0)
+        {
+            var candidate = queue.Dequeue();
+            var current = candidate[^1];
+            var key = (current.coord.col, current.coord.row);
+            if (!visited.Add(key))
+                continue;
+            if (SameCoord(current.coord, target))
+            {
+                path = candidate;
+                return true;
+            }
+
+            foreach (var parent in current.parents
+                         .OrderBy(parent => SameCoord(parent.coord, target) ? 0 : 1)
+                         .ThenBy(parent => parent.coord.col))
+            {
+                if (visited.Contains((parent.coord.col, parent.coord.row)))
+                    continue;
+                var next = new List<MapPoint>(candidate.Count + 1);
+                next.AddRange(candidate);
+                next.Add(parent);
+                queue.Enqueue(next);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool SameCoord(MapCoord left, MapCoord right) =>
+        left.col == right.col && left.row == right.row;
 }
 
 // 遭遇预告的悬浮提示（原版 NHoverTipSet，挂在 NGame.HoverTipsContainer 下）

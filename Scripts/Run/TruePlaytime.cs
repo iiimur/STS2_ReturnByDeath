@@ -14,9 +14,7 @@ internal static class TruePlaytimeTracker
     }
 
     private static readonly object Sync = new();
-    private static readonly string FilePath = Path.Combine(
-        ModLog.ModDirectory,
-        "return-by-death.true-playtime.json");
+    private static readonly string FilePath = ModLog.StateFile("return-by-death.true-playtime.json");
     private static PlaytimeFile? _file;
 
     public static long ExtraSeconds

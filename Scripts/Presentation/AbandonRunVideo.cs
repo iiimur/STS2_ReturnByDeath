@@ -29,9 +29,7 @@ internal static class AbandonRunVideo
     private const string RejectVideoFileName = "拒绝奥托.ogv";
     private const double VideoLastFramePosition = 16.97d;
     private const string EventUsedMarkerPrefix = "return-by-death-otto-event-used-v1:";
-    private static readonly string EventUsedMarkerPath = Path.Combine(
-        ModLog.ModDirectory,
-        "return-by-death.otto-event-used");
+    private static readonly string EventUsedMarkerPath = ModLog.StateFile("return-by-death.otto-event-used");
     private static CanvasLayer? _layer;
     private static VideoStreamPlayer? _video;
     private static ColorRect? _choiceDim;
@@ -41,10 +39,13 @@ internal static class AbandonRunVideo
     private static SerializableRun? _checkpoint;
     private static int _started;
     private static int _selected;
+    private static int _nativeBgmDuckHeld;
 
     public static void ResetForNewRun()
     {
         try { File.Delete(EventUsedMarkerPath); } catch { }
+        ReleaseNativeBgmDuck("new run");
+        OttoAcceptanceMusic.StopImmediately();
         OttoPendingCleanup.Clear();
         OttoAcceptanceState.Clear();
     }
@@ -116,6 +117,8 @@ internal static class AbandonRunVideo
                 throw new InvalidOperationException("SceneTree root is unavailable.");
 
             var viewportSize = tree.Root.GetViewport().GetVisibleRect().Size;
+            Volatile.Write(ref _nativeBgmDuckHeld,
+                NativeBgmDucker.Acquire("Otto video") ? 1 : 0);
             _layer = new CanvasLayer
             {
                 Name = "ReturnByDeathAbandonVideo",
@@ -285,6 +288,9 @@ internal static class AbandonRunVideo
             return;
 
         MarkUsedForRun(_checkpoint);
+        // 视频的 BGM 租约交接给接受后的专属音乐；拒绝分支仍由视频租约
+        // 持有到回归清理结束。这样按钮音效/短音效不会被 BGM 衰减影响。
+        OttoAcceptanceMusic.AcquireNativeBgmDuck();
         _acceptButton!.Disabled = true;
         _rejectButton!.Disabled = true;
         _ = AcceptOttoAsync();
@@ -499,5 +505,12 @@ internal static class AbandonRunVideo
         _acceptButton = null;
         _rejectButton = null;
         _layer = null;
+        ReleaseNativeBgmDuck("Otto video cleanup");
+    }
+
+    private static void ReleaseNativeBgmDuck(string reason)
+    {
+        if (Interlocked.Exchange(ref _nativeBgmDuckHeld, 0) != 0)
+            NativeBgmDucker.Release(reason);
     }
 }

@@ -45,9 +45,9 @@ internal static class EncounterJournalStore
     public static bool ShouldSkipCurrentEncounter =>
         ReplayActive && Volatile.Read(ref _currentEncounterShouldSkip) != 0;
     private static readonly object Sync = new();
-    private static readonly string JournalPath = Path.Combine(RecoveryMarker.ModDirectory, "deathless-run.encounter-journal.json");
-    private static readonly string LegacyPath = Path.Combine(RecoveryMarker.ModDirectory, "deathless-run.fixed-rooms.json");
-    private static readonly string ReplayModePath = Path.Combine(RecoveryMarker.ModDirectory, "deathless-run.encounter-replay");
+    private static readonly string JournalPath = ModLog.StateFile("deathless-run.encounter-journal.json");
+    private static readonly string LegacyPath = ModLog.StateFile("deathless-run.fixed-rooms.json");
+    private static readonly string ReplayModePath = ModLog.StateFile("deathless-run.encounter-replay");
     private static EncounterJournalFile? _file;
     private static MapCoord? _pendingCoordinate;
     private static int _replayActive;

@@ -28,8 +28,7 @@ internal static class GreedFinaleState
         public int DeathsInAct3 { get; set; }
     }
 
-    private static readonly string StatePath = Path.Combine(
-        ModLog.ModDirectory, "return-by-death.greed-finale.json");
+    private static readonly string StatePath = ModLog.StateFile("return-by-death.greed-finale.json");
     private static readonly object Sync = new();
     private static int _presentingVictory;
 

@@ -7,7 +7,7 @@ namespace ReturnByDeath;
 internal static class RouteState
 {
     private const string StateFileName = "return-by-death.route-state.json";
-    private static readonly string StatePath = Path.Combine(ModLog.ModDirectory, StateFileName);
+    private static readonly string StatePath = ModLog.StateFile(StateFileName);
     private static readonly object _gate = new();
     private static int _loaded;
     private static int _ifRoute;
@@ -90,6 +90,7 @@ internal static class RouteState
         EnsureLoaded();
         Interlocked.Exchange(ref _ifRoute, 1);
         Interlocked.Exchange(ref _prideRoute, 1);
+        TombstoneEntry.HideForIfRoute();
         Save();
         ModLog.Write("Pride ending entered: IF route=true, Pride route=true.");
     }
@@ -99,6 +100,7 @@ internal static class RouteState
         EnsureLoaded();
         Interlocked.Exchange(ref _ifRoute, 1);
         Interlocked.Exchange(ref _slothRoute, 1);
+        TombstoneEntry.HideForIfRoute();
         Save();
         // 怠惰线从此不再有未知路线：自动打开全图，并允许自由移动。
         MapNodeVisibilityFilter.EnableOpenEye();
@@ -110,6 +112,7 @@ internal static class RouteState
         EnsureLoaded();
         Interlocked.Exchange(ref _ifRoute, 1);
         Interlocked.Exchange(ref _wrathRoute, 1);
+        TombstoneEntry.HideForIfRoute();
         Save();
         ModLog.Write("Wrath ending entered: IF route=true, Wrath route=true.");
     }

@@ -5,7 +5,7 @@ namespace ReturnByDeath;
 internal static class RecoveryMarker
 {
     private const string MarkerContent = "deathless-run-v4";
-    private static readonly string MarkerPath = Path.Combine(ModDirectory, "deathless-run.pending");
+    private static readonly string MarkerPath = ModLog.StateFile("deathless-run.pending");
     private static int _armed;
     private static int _preserveNativeRun;
 

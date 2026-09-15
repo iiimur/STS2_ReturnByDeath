@@ -233,6 +233,7 @@ internal static class EchidnaTrial
         // 强欲线不再愧疚：预算立即清零，顶栏显示“愧疚 0 受伤 0”。
         CheckpointStore.CurseBudget.ClearToZero("Heart of Greed obtained");
         GreedIfState.Mark();
+        TombstoneEntry.HideForIfRoute();
         EchidnaCurseCleanup.Mark(owner);
     }
 

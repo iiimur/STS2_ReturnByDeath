@@ -7,6 +7,84 @@ internal static class ModLog
     public static string ModDirectory =>
         Path.GetDirectoryName(typeof(Entry).Assembly.Location) ?? AppContext.BaseDirectory;
 
+    private static readonly string[] StateFileNames =
+    {
+        "deathless-run.checkpoint.json",
+        "deathless-run.checkpoint.version",
+        "deathless-run.encounter-journal.json",
+        "deathless-run.fixed-rooms.json",
+        "deathless-run.encounter-replay",
+        "deathless-run.explored-nodes.json",
+        "deathless-run.first-recovery-audio-used",
+        "deathless-run.pending",
+        "deathless-run.pending-restored-cards.json",
+        "return-by-death.act2-ancient.json",
+        "return-by-death.amnesia.json",
+        "return-by-death.curse-budget.json",
+        "return-by-death.echidna-visit.json",
+        "return-by-death.greed-finale.json",
+        "return-by-death.if-achievements.json",
+        "return-by-death.otto-accepted",
+        "return-by-death.otto-checkpoint-pending",
+        "return-by-death.otto-event-used",
+        "return-by-death.otto-pending-cleanup",
+        "return-by-death.rem-state.json",
+        "return-by-death.reward-snapshot.json",
+        "return-by-death.route-state.json",
+        "return-by-death.true-playtime.json"
+    };
+    private static string? _stateDirectory;
+    private static int _stateStorageReady;
+
+    // 状态文件不能放在 mods 目录：创意工坊更新可能替换整个 mod 文件夹，
+    // 游戏启动时也会把其中每个 JSON 都当成潜在的 mod 清单扫描。
+    public static string StateDirectory
+    {
+        get
+        {
+            EnsureStateStorage();
+            return _stateDirectory!;
+        }
+    }
+
+    public static string StateFile(string fileName) =>
+        Path.Combine(StateDirectory, fileName);
+
+    public static void EnsureStateStorage()
+    {
+        if (Interlocked.CompareExchange(ref _stateStorageReady, 1, 0) != 0)
+            return;
+
+        try
+        {
+            var appData = System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData);
+            if (string.IsNullOrWhiteSpace(appData))
+                appData = AppContext.BaseDirectory;
+
+            _stateDirectory = Path.Combine(appData, "SlayTheSpire2", "ReturnByDeath");
+            Directory.CreateDirectory(_stateDirectory);
+
+            // 只复制旧状态，不在未获用户确认前删除旧文件。新版本已经改为
+            // 从 StateDirectory 读写，因此即使旧文件被工坊更新覆盖也不会影响
+            // 已迁移的检查点；旧文件留在原处仅用于安全回退和人工清理。
+            foreach (var fileName in StateFileNames)
+            {
+                var legacyPath = Path.Combine(ModDirectory, fileName);
+                var statePath = Path.Combine(_stateDirectory, fileName);
+                if (File.Exists(statePath) || !File.Exists(legacyPath))
+                    continue;
+
+                try { File.Copy(legacyPath, statePath); }
+                catch { }
+            }
+        }
+        catch
+        {
+            // 极端权限环境回退到 mod 目录，保证状态读写不会阻断游戏启动。
+            _stateDirectory = ModDirectory;
+        }
+    }
+
     private static string LogPath => Path.Combine(ModDirectory, "return-by-death.log");
 
     public static void Write(string message)
@@ -128,8 +206,7 @@ internal static class RecoveryAudio
 {
     private const string FirstAudioFileName = "重生音效-首次.wav";
     private const string NormalAudioFileName = "重生音效-常规.wav";
-    private static readonly string FirstAudioUsedMarkerPath = Path.Combine(
-        ModLog.ModDirectory,
+    private static readonly string FirstAudioUsedMarkerPath = ModLog.StateFile(
         "deathless-run.first-recovery-audio-used");
     private static readonly WavPlayer Player = new("recovery");
 

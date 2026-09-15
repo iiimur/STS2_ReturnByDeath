@@ -8,15 +8,10 @@ internal static class CheckpointStore
     private const int ActOneHealth = 4;
     internal const int InitialMaxHealth = 86;
     private const string CheckpointVersion = "deathless-run-checkpoint-v4";
-    private static readonly string CheckpointPath = Path.Combine(
-        RecoveryMarker.ModDirectory,
-        "deathless-run.checkpoint.json");
-    private static readonly string CheckpointVersionPath = Path.Combine(
-        RecoveryMarker.ModDirectory,
-        "deathless-run.checkpoint.version");
+    private static readonly string CheckpointPath = ModLog.StateFile("deathless-run.checkpoint.json");
+    private static readonly string CheckpointVersionPath = ModLog.StateFile("deathless-run.checkpoint.version");
     // 旧版“删牌后回归补牌”队列不再参与任何逻辑，只在清理时删除遗留文件。
-    private static readonly string LegacyPendingRestoredCardsPath = Path.Combine(
-        RecoveryMarker.ModDirectory,
+    private static readonly string LegacyPendingRestoredCardsPath = ModLog.StateFile(
         "deathless-run.pending-restored-cards.json");
     private static readonly object Sync = new();
 
@@ -257,9 +252,7 @@ internal static class CheckpointStore
         private const int CurrentVersion = 2;
 
         private static readonly object Sync = new();
-        private static readonly string BudgetPath = Path.Combine(
-            RecoveryMarker.ModDirectory,
-            "return-by-death.curse-budget.json");
+        private static readonly string BudgetPath = ModLog.StateFile("return-by-death.curse-budget.json");
         private static BudgetFile? _file;
 
         private static BudgetFile EnsureLoaded()

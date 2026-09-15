@@ -17,6 +17,10 @@ public static class Entry
     /// </summary>
     public static void Init()
     {
+        // 迁移旧版本状态文件，避免后续读写继续依赖工坊目录；不触碰
+        // 原生 current_run.save、progress.save 等游戏存档。
+        ModLog.EnsureStateStorage();
+
         // Harmony 是运行时补丁框架；PatchAll 会扫描当前程序集中的 HarmonyPatch 类。
         // ID 只要保持唯一即可，不需要与游戏内显示名称相同。
         new Harmony("ReturnByDeath").PatchAll(Assembly.GetExecutingAssembly());

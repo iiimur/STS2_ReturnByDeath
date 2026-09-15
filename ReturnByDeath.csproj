@@ -50,7 +50,6 @@
     <ModStaticFiles Include="Resource/图片/选项按钮贴图/*.png" />
     <!-- 艾姬多娜事件（墓碑巨大花卉）的背景图。DLL 从 mod 根目录读取它。 -->
     <ModStaticFiles Include="Resource/图片/艾姬多娜-背景.png" />
-    <ModStaticFiles Include="Resource/图片/怠惰结局触发.png" />
     <!-- 怠惰 IF 线进入时显示的羽化结局图。DLL 从 mod 根目录读取它。 -->
     <ModStaticFiles Include="Resource/图片/怠惰结局触发-羽化.png" />
     <!-- 莱茵哈鲁特被非正常删牌时显示的傲慢结局图。DLL 从 mod 根目录读取它。 -->
