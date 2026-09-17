@@ -1,5 +1,7 @@
 // 按功能拆分；仍编译进同一个 ReturnByDeath DLL。
 
+using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
+
 namespace ReturnByDeath;
 
 [HarmonyPatch(typeof(NRunHistory), "OnLeftButtonButtonReleased")]
@@ -133,6 +135,7 @@ internal static class AmnesiaMemoryPanel
             runHistoryView.SetAnchorsPreset(Control.LayoutPreset.FullRect);
             _panelRoot.AddChild(runHistoryView);
             _historyView = runHistoryView;
+            AttachNativeBackButton(runHistoryView);
             _episodeIndex = Math.Max(0, AmnesiaState.GetEpisodeCount() - 1);
             ShowEpisode(_episodeIndex);
 
@@ -167,12 +170,6 @@ internal static class AmnesiaMemoryPanel
             // 关闭面板——ESC 只关面板，不会触发设置窗口。
             NHotkeyManager.Instance!.AddBlockingScreen(_panelRoot);
             NHotkeyManager.Instance!.PushHotkeyPressedBinding(MegaInput.cancel, ClosePanel);
-
-            // 点击任意非交互区域（背景、遮罩）关闭；卡牌、按钮等交互控件
-            // 自己消费点击，不会误关。
-            var clickClose = new ClickCloseNode(_panelRoot);
-            clickClose.CloseRequested += ClosePanel;
-            _panelRoot.AddChild(clickClose);
 
             ModLog.Write("Memory panel opened (native run history view).");
         }
@@ -284,6 +281,7 @@ internal static class AmnesiaMemoryPanel
         _panelRoot = null;
         Volatile.Write(ref _open, 0);
         _historyView = null;
+        _backButton = null;
         _episodeIndex = 0;
         _ = TearDownNextFrameAsync(panelRoot);
     }
@@ -335,62 +333,58 @@ internal static class AmnesiaMemoryPanel
         }
     }
 
-    // 点击任意非交互区域（背景、遮罩）关闭面板：从点击命中的控件向上找，
-    // 命中链上存在可交互控件（NClickableControl：按钮、卡牌条目、地图条目等）
-    // 就不关闭；落在背景/空白处则关闭面板并消费这次点击。
-    // 空白点击关闭：空白 = 屏幕上除按钮外的任意位置。从命中控件沿父链向上
-    // 找，遇到按钮（原版 NButton 体系或 Godot Button）就交给按钮处理；没遇到
-    // 就视为空白——无论命中链是否回到面板根（面板背景、遮罩、历史页空白、
-    // 甚至面板矩形之外的角落）都关闭面板。之前用“链上出现可交互控件就不关”
-    // 的判定过于宽泛，历史页里大量节点都是 NClickableControl，导致永远关不掉。
-    // 空白点击关闭：空白 = 面板范围内除面板自有按钮（左右切换箭头）外的
-    // 任意位置。判定时沿点击命中控件向上走到面板根为止——命中链里出现
-    // 面板按钮就交给按钮；没出现就关闭。命中链没经过面板根说明点的是
-    // 面板之外的其他 UI（如确认弹窗的按钮），不干预。
-    // 之前两个版本失败的共性原因：命中链没有限制在面板范围内，游戏主 UI
-    // 里位于面板之上的按钮会让所有点击都被误判为“点了按钮”。
-    private sealed class ClickCloseNode : Node
+    private static NBackButton? _backButton;
+
+    private static void AttachNativeBackButton(NRunHistory view)
     {
-        private readonly Control _panelRoot;
-
-        public ClickCloseNode(Control panelRoot) => _panelRoot = panelRoot;
-
-        public event Action? CloseRequested;
-
-        public override void _Input(InputEvent inputEvent)
+        try
         {
-            if (inputEvent is not InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true })
-                return;
-
-            var viewport = GetViewport();
-            var overPanel = false;
-            for (Node? node = viewport.GuiGetHoveredControl(); node is not null; node = node.GetParent())
+            var submenuType = typeof(NRunHistory).BaseType;
+            var backButton = submenuType is null
+                ? null
+                : AccessTools.Field(submenuType, "_backButton")?.GetValue(view) as NBackButton;
+            if (backButton is null || !GodotObject.IsInstanceValid(backButton))
             {
-                if (node == _panelRoot)
-                {
-                    overPanel = true;
-                    break;
-                }
-                if (node is NRunHistoryArrowButton)
-                    return;
+                ModLog.Write("Memory panel could not find the native run-history back button.");
+                return;
             }
 
-            if (!overPanel)
-                return;
-            viewport?.SetInputAsHandled();
-            CloseRequested?.Invoke();
+            _backButton = backButton;
+            // NBackButton._Ready() 会调用 OnDisable()：除了设置禁用状态，
+            // 还会把按钮移动到 hide position。只设置 Visible 不会恢复位置，
+            // 因此必须走原生 Enable()，让按钮回到 show position 并重新接受点击。
+            _backButton.Enable();
+            _backButton.Visible = true;
+            ModLog.Write("Memory panel attached the native run-history back button.");
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Memory panel back-button setup failed: {exception}");
         }
     }
 
+    internal static bool TryHandleNativeBackButton(NBackButton button)
+    {
+        if (Volatile.Read(ref _open) == 0 || !ReferenceEquals(button, _backButton))
+            return false;
+
+        ClosePanel();
+        return true;
+    }
+
     // 用某次死亡记录拼出原版历史记录需要的最小数据：作战记录 + 玩家（死亡卡组）。
-    // 遗物、药水、徽章、种子等留空，原版 UI 显示为空区块；总时间与日期按
-    // “死亡时刻”回推，仅作展示。
+    // 遗物、药水、徽章、种子等留空，原版 UI 显示为空区块；总时间仍按记忆
+    // 保存的游玩时长显示，右上角日期使用本局开始时间 + 该次记录结束时长。
     private static RunHistory BuildMemoryHistory(int episodeIndex)
     {
         var livePlayer = RunManager.Instance?.DebugOnlyGetState()?.Players.FirstOrDefault()
             ?? throw new InvalidOperationException("No live player for the memory panel.");
         var episode = AmnesiaState.GetEpisode(episodeIndex);
         var deathPlaytime = episode?.DeathPlaytimeSeconds ?? AmnesiaState.DeathPlaytimeSeconds;
+        var runStartTime = episode?.RunStartTime ?? 0;
+        var memoryEndTime = runStartTime > 0
+            ? runStartTime + deathPlaytime
+            : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var actIds = episode?.ActIds ?? AmnesiaState.GetHistoryActIds();
         var historyEntries = episode?.HistoryEntries ?? AmnesiaState.GetHistoryEntries();
         var deathDeck = episode is { DeathDeck.Count: > 0 }
@@ -416,8 +410,20 @@ internal static class AmnesiaMemoryPanel
                 }
             },
             RunTime = deathPlaytime,
-            StartTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - deathPlaytime,
+            // NRunHistory 把 RunHistory.StartTime 渲染为右上角的日期时间。
+            // 这里传入该条记忆结束/死亡时刻，避免用“当前时间回推”造成
+            // 记忆越新、显示日期反而越早的倒序现象。
+            StartTime = memoryEndTime,
             Win = false
         };
     }
+}
+
+[HarmonyPatch(typeof(NClickableControl), "OnRelease")]
+internal static class AmnesiaMemoryNativeBackButtonPatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(NClickableControl __instance) =>
+        __instance is not NBackButton backButton ||
+        !AmnesiaMemoryPanel.TryHandleNativeBackButton(backButton);
 }

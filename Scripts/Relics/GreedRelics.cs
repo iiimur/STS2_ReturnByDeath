@@ -3,7 +3,8 @@
 // - 过去的苦痛（套用涅奥的苦痛）：战斗开始时获得 1 层虚弱。
 // - 现在的牺牲（套用涅奥的牺牲）：战斗开始时获得 1 层脆弱。
 // - 未来的骨骸（套用涅奥的骨骸）：战斗开始时获得 1 层易伤。
-// - 强欲之心（套用白银熔炉）：不再愧疚；每次死亡回归后生命/生命上限各 +2。
+// - 强欲之心（套用故事书）：不再愧疚；每次死亡回归后生命/生命上限各 +239，
+//   最大生命不超过 114514；达到上限后当前生命仍继续恢复至满血。
 //   效果实现在 CheckpointStore.ApplyRecoveryState（回归流程），遗物本身是被动的。
 // - 朋友的护符（套用涅奥的护符）：每场战斗第一回合将临时“奥托”加入手牌。
 // - 怠惰之心（套用捕梦网）：获得即进入「怠惰」IF 线（RouteState.EnterSlothRoute）。
@@ -88,13 +89,14 @@ public sealed class BonesOfTheFuture : RelicModel
     }
 }
 
-// 强欲之心：贴图套用白银熔炉（SilverCrucible）。被动效果在死亡回归流程
-// （CheckpointStore）里实现：愧疚值固定为 0，回归后生命/生命上限各 +2。
+// 强欲之心：贴图套用故事书（Storybook）。被动效果在死亡回归流程
+// （CheckpointStore）里实现：愧疚值固定为 0，回归后生命/生命上限各 +239，
+// 最大生命封顶 114514，达到上限后仍然恢复当前生命。
 public sealed class HeartOfGreed : RelicModel
 {
     public override RelicRarity Rarity => RelicRarity.Ancient;
 
-    protected override string IconBaseName => "silver_crucible";
+    protected override string IconBaseName => "storybook";
 }
 
 // 朋友的护符（模型 ID 仍为 OTTO_CONTRACT）：把“接受奥托后每场战斗第一
@@ -173,7 +175,7 @@ internal static class GreedRelicText
         ["BONES_OF_THE_FUTURE.flavor"] = "它属于一个尚未到来的你。",
 
         ["HEART_OF_GREED.title"] = "强欲之心",
-        ["HEART_OF_GREED.description"] = "不再愧疚。每次死亡回归生命上限加[blue]2[/blue]。",
+        ["HEART_OF_GREED.description"] = "不再愧疚。每次死亡回归后生命上限加[blue]239[/blue]，最高不超过[blue]114514[/blue]；达到上限后仍会恢复生命值。",
         ["HEART_OF_GREED.flavor"] = "想要的，从来都不只是活下去。",
 
         ["OTTO_CONTRACT.title"] = "朋友的护符",

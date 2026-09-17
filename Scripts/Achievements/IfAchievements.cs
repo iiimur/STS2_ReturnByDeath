@@ -38,7 +38,6 @@ internal static class IfAchievements
         // 原生玉石之剑与涅奥护符作为成就图标；悬浮文字仍显示成就本身。
         new() { Id = "reinhard_rescue", Name = "剑圣的援手", Description = "在致命的敌方回合前得到莱茵哈鲁特的救援。", DisplayRelicType = typeof(SwordOfJade) },
         new() { Id = "otto_accept", Name = "朋友的护符", Description = "接受了奥托的提议。", DisplayRelicType = typeof(OttoContract) },
-        new() { Id = "otto_reject", Name = "另一条路", Description = "拒绝了奥托的提议。", DisplayRelicType = typeof(NeowsTalisman) },
         new() { Id = "echidna_past", Name = "过去的试炼", Description = "在艾姬多娜事件中通过过去的试炼。", DisplayRelicType = typeof(PainOfThePast) },
         new() { Id = "echidna_present", Name = "现在的试炼", Description = "在艾姬多娜事件中通过现在的试炼。", DisplayRelicType = typeof(SacrificeOfThePresent) },
         new() { Id = "echidna_future", Name = "未来的试炼", Description = "在艾姬多娜事件中通过未来的试炼。", DisplayRelicType = typeof(BonesOfTheFuture) },
@@ -114,6 +113,35 @@ internal static class IfAchievements
             }
 
             return isUnlocked;
+        }
+    }
+
+    public static int HideAll(IEnumerable<Achievement> achievements)
+    {
+        lock (Sync)
+        {
+            var unlocked = EnsureLoaded();
+            var hidden = 0;
+            foreach (var achievement in achievements)
+            {
+                if (unlocked.Remove(achievement.Id))
+                    hidden++;
+            }
+
+            if (hidden == 0)
+                return 0;
+
+            try
+            {
+                File.WriteAllText(StatePath, JsonSerializer.Serialize(unlocked));
+                ModLog.Write($"IF achievements hidden by category command: {hidden}.");
+            }
+            catch (Exception exception)
+            {
+                ModLog.Write($"IF achievement category hide failed: {exception.Message}");
+            }
+
+            return hidden;
         }
     }
 
@@ -313,6 +341,24 @@ internal static class IfAchievementRelicDescriptionPatch
         var achievement = IfAchievementRelicCollection.GetAchievementFor(__instance);
         if (achievement is not null)
             __result = new LocString("relics", achievement.DescriptionLocKey);
+    }
+}
+
+// 遗物详情页（NInspectRelicScreen）用 SaveManager.IsRelicSeen 决定展示真实资料
+// 还是“未发现”占位。成就图标借用的原生遗物大多已被玩家在本局里真正拿到过，
+// 因此 IsRelicSeen 为 true，点击未解锁的成就就会直接泄露名称、描述与风味文本。
+// 在 IF 成就页打开期间，把未解锁成就一律视为“未见过”，详情页便走原生的
+// UNDISCOVERED 分支（图标压暗、名称与描述替换为未知占位）。
+// 该方法是全游戏唯一的调用点就在这里，所以在非成就页不受影响。
+[HarmonyPatch(typeof(SaveManager), nameof(SaveManager.IsRelicSeen))]
+internal static class IfAchievementRelicSeenPatch
+{
+    [HarmonyPostfix]
+    private static void Postfix(RelicModel relic, ref bool __result)
+    {
+        var achievement = IfAchievementRelicCollection.GetAchievementFor(relic);
+        if (achievement is not null)
+            __result = IfAchievements.IsUnlocked(achievement.Id);
     }
 }
 

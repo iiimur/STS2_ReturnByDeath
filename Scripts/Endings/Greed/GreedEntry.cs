@@ -45,6 +45,107 @@ internal static class TombstoneTravelVetoPatch
     }
 }
 
+// 当地图旅行已被禁用时，点击地图上的任意节点不会进入 TravelToMapCoord，
+// 因而也不会经过上面的 SetTravelEnabled 拦截；在节点释放阶段补上同一提示。
+[HarmonyPatch(typeof(NMapPoint), "OnRelease")]
+internal static class TombstoneMapPointReleasePatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(NMapPoint __instance)
+    {
+        if (!TombstoneEntry.IsButtonVisible || NMapScreen.Instance is null ||
+            !NMapScreen.Instance.IsVisibleInTree())
+            return true;
+
+        if (!TombstoneEntry.IsConnectedMapPoint(__instance))
+            return true;
+
+        EchidnaTravelNotice.Show();
+        ModLog.Write($"Map travel click blocked while the Echidna tombstone is showing: {__instance.Name}.");
+        return false;
+    }
+}
+
+// 某些地图输入模式会直接调用 NMapScreen 的本地选点方法，跳过
+// NMapPoint.OnRelease；在这里再拦一次，确保玩家确实尝试选择路线时有提示。
+[HarmonyPatch(typeof(NMapScreen), nameof(NMapScreen.OnMapPointSelectedLocally))]
+internal static class TombstoneMapPointSelectedPatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(NMapScreen __instance, NMapPoint point)
+    {
+        if (!TombstoneEntry.IsButtonVisible || !__instance.IsVisibleInTree())
+            return true;
+
+        if (!TombstoneEntry.IsConnectedMapPoint(point))
+            return true;
+
+        EchidnaTravelNotice.Show();
+        ModLog.Write($"Map point selection blocked while the Echidna tombstone is showing: {point.Name}.");
+        return false;
+    }
+}
+
+// 最终的旅行调用也拦截，覆盖键盘/手柄确认或其他 UI 触发的前进操作。
+[HarmonyPatch(typeof(NMapScreen), nameof(NMapScreen.TravelToMapCoord), new[] { typeof(MapCoord) })]
+internal static class TombstoneTravelToCoordPatch
+{
+    [HarmonyPrefix]
+    [HarmonyPriority(Priority.First)]
+    private static bool Prefix(NMapScreen __instance, MapCoord coord, ref Task __result)
+    {
+        if (!TombstoneEntry.IsButtonVisible || !__instance.IsVisibleInTree())
+            return true;
+
+        if (!TombstoneEntry.IsConnectedMapCoord(coord))
+            return true;
+
+        EchidnaTravelNotice.Show();
+        ModLog.Write($"Travel request blocked while the Echidna tombstone is showing: {coord}.");
+        __result = Task.CompletedTask;
+        return false;
+    }
+}
+
+// 旅行被禁用后，地图节点不会收到 OnRelease；NMapScreen._Input 仍会收到
+// 鼠标点击，因此在这里触发原生商店气泡。点击右侧图例本身不提示。
+[HarmonyPatch(typeof(NMapScreen), "_Input")]
+internal static class TombstoneMapInputPatch
+{
+    [HarmonyPrefix]
+    private static void Prefix(NMapScreen __instance, InputEvent inputEvent)
+    {
+        if (!TombstoneEntry.IsButtonVisible || !__instance.IsVisibleInTree() ||
+            inputEvent is not InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true } mouse)
+            return;
+
+        var legend = __instance.GetNodeOrNull<Control>("%MapLegend");
+        if (legend is not null && legend.GetGlobalRect().HasPoint(mouse.Position))
+            return;
+
+        var point = FindMapPointAt(__instance, mouse.Position);
+        if (point is null || !TombstoneEntry.IsConnectedMapPoint(point))
+            return;
+
+        EchidnaTravelNotice.Show();
+        ModLog.Write($"Connected map point click blocked while the Echidna tombstone is showing: {point.Name}.");
+    }
+
+    private static NMapPoint? FindMapPointAt(Node root, Vector2 position)
+    {
+        foreach (var child in root.GetChildren())
+        {
+            if (child is NMapPoint point && point.GetGlobalRect().HasPoint(position))
+                return point;
+            if (child is Node node && FindMapPointAt(node, position) is { } nested)
+                return nested;
+        }
+
+        return null;
+    }
+}
+
+
 internal static class TombstoneEntry
 {
     private const int GreedActIndex = 1; // 第二层。
@@ -132,6 +233,7 @@ internal static class TombstoneEntry
     {
         Volatile.Write(ref _specialFlowerActive, 0);
         Volatile.Write(ref _specialGreedOnly, 0);
+        EchidnaTravelNotice.Reset();
     }
 
     // 路线一旦开启，墓碑入口立即失效，不等待下一次地图重建。
@@ -146,6 +248,48 @@ internal static class TombstoneEntry
     // 沙堡按钮当前是否可见（仅地图打开期间有意义）。
     internal static bool IsButtonVisible =>
         _button is not null && GodotObject.IsInstanceValid(_button) && _button.Visible;
+
+    internal static bool IsConnectedMapPoint(NMapPoint point)
+    {
+        var state = RunManager.Instance?.DebugOnlyGetState();
+        var current = state?.CurrentMapPoint;
+        if (current is null && state?.CurrentMapCoord is { } currentCoord)
+            current = state.Map?.GetPoint(currentCoord);
+        if (state is null || current is null || point.Point is null)
+            return false;
+
+        try
+        {
+            return MapTravel.GetTravelablePointsFrom(state, current)
+                .Any(candidate => candidate.coord.Equals(point.Point.coord));
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Could not determine connected map point: {exception.Message}");
+            return false;
+        }
+    }
+
+    internal static bool IsConnectedMapCoord(MapCoord coord)
+    {
+        var state = RunManager.Instance?.DebugOnlyGetState();
+        var current = state?.CurrentMapPoint;
+        if (current is null && state?.CurrentMapCoord is { } currentCoord)
+            current = state.Map?.GetPoint(currentCoord);
+        if (state is null || current is null)
+            return false;
+
+        try
+        {
+            return MapTravel.GetTravelablePointsFrom(state, current)
+                .Any(candidate => candidate.coord.Equals(coord));
+        }
+        catch (Exception exception)
+        {
+            ModLog.Write($"Could not determine connected map coordinate: {exception.Message}");
+            return false;
+        }
+    }
 
     public static void Ensure(NMapScreen mapScreen)
     {
@@ -187,6 +331,8 @@ internal static class TombstoneEntry
             // 克隆体保留原生节点名（_Ready 会按名字做本地化并校验，非法名字会
             // 抛异常），加入场景树后立刻覆盖为沙堡图标与“？？？”文本。
             var clone = (NMapLegendItem)reference.Duplicate();
+            clone.SetMeta("ReturnByDeathEchidnaLegend", true);
+            _button = clone;
             items.AddChild(clone);
             var icon = clone.GetNode<TextureRect>("Icon");
             icon.Texture = LoadSandCastleIcon();
@@ -203,7 +349,6 @@ internal static class TombstoneEntry
             clone.Enable();
             clone.MouseFilter = Control.MouseFilterEnum.Stop;
             clone.Connect(NClickableControl.SignalName.Released, Callable.From<NButton>(_ => OnTombstonePressed()));
-            _button = clone;
             UpdateLayout();
         }
         catch (Exception exception)
@@ -532,4 +677,23 @@ internal static class EchidnaLegendUnfocusPatch
         TombstoneEntry.AnimateIconScale(1f);
         return false;
     }
+}
+
+// Duplicate 图例条目的 Name 会被 Godot 自动改成 @Control@…；原生
+// NMapLegendItem._Ready 会拿这个临时名字查本地化表并抛异常。艾姬多娜
+// 入口自己设置文字，不需要这一步，跳过它即可保留原生按钮的其余初始化。
+[HarmonyPatch(typeof(NMapLegendItem), "SetLocalizedFields")]
+internal static class EchidnaLegendLocalizationPatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(NMapLegendItem __instance) =>
+        !__instance.HasMeta("ReturnByDeathEchidnaLegend");
+}
+
+[HarmonyPatch(typeof(NMapLegendItem), "SetMapPointType")]
+internal static class EchidnaLegendPointTypePatch
+{
+    [HarmonyPrefix]
+    private static bool Prefix(NMapLegendItem __instance) =>
+        !__instance.HasMeta("ReturnByDeathEchidnaLegend");
 }

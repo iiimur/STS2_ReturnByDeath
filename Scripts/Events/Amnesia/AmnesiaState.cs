@@ -11,6 +11,8 @@ internal static class AmnesiaState
         public List<List<MapPointHistoryEntry>> HistoryEntries { get; set; } = new();
         public List<SerializableCard> DeathDeck { get; set; } = new();
         public string CharacterId { get; set; } = string.Empty;
+        // 本局的 Unix 开始时间。旧记录没有这个字段时从 Key 的第一段恢复。
+        public long RunStartTime { get; set; }
         public long CheckpointNativeSeconds { get; set; }
         public long DeathNativeSeconds { get; set; }
         public long DeathPlaytimeSeconds { get; set; }
@@ -22,6 +24,7 @@ internal static class AmnesiaState
         public List<List<MapPointHistoryEntry>> HistoryEntries { get; init; } = new();
         public List<SerializableCard> DeathDeck { get; init; } = new();
         public string CharacterId { get; init; } = string.Empty;
+        public long RunStartTime { get; init; }
         public long CheckpointNativeSeconds { get; init; }
         public long DeathNativeSeconds { get; init; }
         public long DeathPlaytimeSeconds { get; init; }
@@ -167,6 +170,7 @@ internal static class AmnesiaState
                 HistoryEntries = entries,
                 DeathDeck = player?.Deck?.ToList() ?? new List<SerializableCard>(),
                 CharacterId = player?.CharacterId?.ToString() ?? string.Empty,
+                RunStartTime = deathState.StartTime,
                 CheckpointNativeSeconds = checkpoint.RunTime,
                 DeathNativeSeconds = deathState.RunTime,
                 DeathPlaytimeSeconds = deathState.RunTime + TruePlaytimeTracker.ExtraSeconds
@@ -337,6 +341,9 @@ internal static class AmnesiaState
                 return null;
 
             var episode = episodes[index];
+            var runStartTime = episode.RunStartTime > 0
+                ? episode.RunStartTime
+                : ParseRunStartTime(episode.Key);
             return new MemoryEpisodeView
             {
                 ActIds = episode.ActIds.ToList(),
@@ -345,11 +352,27 @@ internal static class AmnesiaState
                     .ToList(),
                 DeathDeck = episode.DeathDeck.ToList(),
                 CharacterId = episode.CharacterId,
+                RunStartTime = runStartTime,
                 CheckpointNativeSeconds = episode.CheckpointNativeSeconds,
                 DeathNativeSeconds = episode.DeathNativeSeconds,
                 DeathPlaytimeSeconds = episode.DeathPlaytimeSeconds
             };
         }
+    }
+
+    private static long ParseRunStartTime(string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+            return 0;
+
+        var firstPart = key.Split(':', 2)[0];
+        return long.TryParse(
+            firstPart,
+            System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var value)
+            ? value
+            : 0;
     }
 
     // 兼容本机制加入前已经保存的记忆片段：从历史面板里的房间记录

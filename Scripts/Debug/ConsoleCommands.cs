@@ -7,8 +7,10 @@ namespace ReturnByDeath;
 //   boss sloth
 //   boss greed
 //   boss wrath
-//   ending 1～3  （按列表序号切换结局成就）
-//   event 1～7   （按列表序号切换事件成就）
+//   ending 1～4  （按列表序号切换结局成就）
+//   event 1～6   （按列表序号切换事件成就）
+//   ending lock  （隐藏全部结局成就）
+//   event lock   （隐藏全部事件成就）
 //
 // boss 系列视为一次正常的结局触发：走与剧情入口完全相同的代码（线路标记、
 // 授予对应遗物与卡牌等），只是不播放结局音效、不淡入羽化结局图。第三层和
@@ -22,6 +24,8 @@ internal static class ReturnByDeathConsoleCommandPatch
     private const string GreedTestCommand = "boss greed";
     private const string WrathTestCommand = "boss wrath";
     private const string OpenEyeCommand = "map reveal";
+    private const string EndingLockCommand = "ending lock";
+    private const string EventLockCommand = "event lock";
 
     [HarmonyPrefix]
     private static bool Prefix(
@@ -42,6 +46,20 @@ internal static class ReturnByDeathConsoleCommandPatch
         {
             MapNodeVisibilityFilter.ToggleOpenEye();
             ClearConsoleInput(console, "open_eye", "full map revealed");
+            return true;
+        }
+
+        if (MatchesTestCommand(args, EndingLockCommand, console, allowInputBufferFallback))
+        {
+            var hidden = IfAchievements.HideAll(IfAchievements.EndingAchievements);
+            ClearConsoleInput(console, EndingLockCommand, $"hidden {hidden} ending achievement(s)");
+            return true;
+        }
+
+        if (MatchesTestCommand(args, EventLockCommand, console, allowInputBufferFallback))
+        {
+            var hidden = IfAchievements.HideAll(IfAchievements.EventAchievements);
+            ClearConsoleInput(console, EventLockCommand, $"hidden {hidden} event achievement(s)");
             return true;
         }
 
@@ -159,7 +177,9 @@ internal static class ReturnByDeathConsoleCommandPatch
                MatchesCommand(input, GreedTestCommand) ||
                MatchesCommand(input, WrathTestCommand) ||
                TryParseIndexedCommand(input, "ending", out _) ||
-               TryParseIndexedCommand(input, "event", out _);
+               TryParseIndexedCommand(input, "event", out _) ||
+               MatchesCommand(input, EndingLockCommand) ||
+               MatchesCommand(input, EventLockCommand);
     }
 
     private static void ToggleAchievementByIndex(
@@ -250,11 +270,18 @@ internal static class ReturnByDeathConsoleCommandPatch
 
         if (value is System.Collections.IEnumerable enumerable)
         {
+            var pieces = new List<string>();
             foreach (var item in enumerable)
             {
                 if (MatchesCommand(item, expected))
                     return true;
+                if (item is string piece && !string.IsNullOrWhiteSpace(piece))
+                    pieces.Add(piece.Trim());
             }
+
+            if (pieces.Count > 0 &&
+                string.Equals(string.Join(' ', pieces), expected, StringComparison.OrdinalIgnoreCase))
+                return true;
         }
 
         return false;

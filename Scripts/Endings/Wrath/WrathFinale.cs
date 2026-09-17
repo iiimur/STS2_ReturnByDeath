@@ -12,7 +12,7 @@ internal static class WrathFinaleState
     private const string FinaleAudioFileName = "愤怒结局ED.wav";
 
     // 点击唯一一次“继续”后先让原版建筑师攻击演出跑起来，再插入结局音效。
-    private const double PreAudioPauseSeconds = 0.2d;
+    private const double PreAudioPauseSeconds = 0.5d;
 
     private static int _started;
 

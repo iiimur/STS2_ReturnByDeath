@@ -7,7 +7,7 @@ using MegaCrit.Sts2.Core.Localization.DynamicVars;
 namespace ReturnByDeath;
 
 /// <summary>
-/// 「愤怒之心」：贴图套用原版「开心小花？？？」（FakeHappyFlower）。规则糅合了怀表
+/// 「愤怒之心」：贴图套用原版「骇人头盔」（IntimidatingHelmet）。规则糅合了怀表
 /// （Pocketwatch，统计本回合打出的牌数）与奥利哈钢（Orichalcum，在回合结束的
 /// 极早期钩子里给予格挡）：本回合打出的牌 ≤ 1 张时，在回合结束时获得 999 格挡。
 ///
@@ -31,10 +31,8 @@ public sealed class HeartOfWrath : RelicModel
 
     public override RelicRarity Rarity => RelicRarity.Ancient;
 
-    // 套用原版「开心小花？？？」（FakeHappyFlower，每 5 个回合获得能量的那一枚），
-    // 而不是正品「开心小花」（HappyFlower，每 3 个回合）——两者贴图不同，这里
-    // 用的是带问号的假花。
-    protected override string IconBaseName => "fake_happy_flower";
+    // 套用原版「骇人头盔」的图标。
+    protected override string IconBaseName => "intimidating_helmet";
 
     // 与怀表一致：战斗中显示本回合已打出的牌数。
     public override bool ShowCounter => CombatManager.Instance.IsInProgress;

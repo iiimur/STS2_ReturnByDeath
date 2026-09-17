@@ -7,6 +7,8 @@ internal static class CheckpointStore
     // 先古回血的基础目标，也是新局/进入楼层时的固定血量。
     private const int ActOneHealth = 4;
     internal const int InitialMaxHealth = 86;
+    internal const int HeartOfGreedHealthBonus = 239;
+    internal const int HeartOfGreedMaxHealthCap = 114514;
     private const string CheckpointVersion = "deathless-run-checkpoint-v4";
     private static readonly string CheckpointPath = ModLog.StateFile("deathless-run.checkpoint.json");
     private static readonly string CheckpointVersionPath = ModLog.StateFile("deathless-run.checkpoint.version");
@@ -80,13 +82,23 @@ internal static class CheckpointStore
             // 傲慢线的旧特权（回归不加诅咒+血量与上限各+1）已删除：进入傲慢
             // 线时改为授予“傲慢之心”，诅咒照常叠加但可被打出——不再与强欲
             // 线的回归加成重复。
-            // 强欲之心：每次回归血量与血量上限各 +2（描述只谈上限，是因为
-            // 原生加上限时会同步加当前生命；这里直接把两者都写进检查点）。
+            // 强欲之心：每次回归最大生命与当前生命各 +239；最大生命封顶
+            // 114514，但达到封顶后当前生命仍继续恢复（直到满血）。
             // 加成同时写回检查点，多次回归持续累计。
             var holdsHeartOfGreed = HoldsHeartOfGreed(player, savedPlayer);
-            var hpBonus = holdsHeartOfGreed ? 2 : 0;
-            savedPlayer.MaxHp += hpBonus;
-            savedPlayer.CurrentHp += hpBonus;
+            if (holdsHeartOfGreed)
+            {
+                savedPlayer.MaxHp = Math.Min(
+                    HeartOfGreedMaxHealthCap,
+                    (int)Math.Min(
+                        HeartOfGreedMaxHealthCap,
+                        (long)savedPlayer.MaxHp + HeartOfGreedHealthBonus));
+                savedPlayer.CurrentHp = Math.Min(
+                    savedPlayer.MaxHp,
+                    (int)Math.Min(
+                        savedPlayer.MaxHp,
+                        (long)savedPlayer.CurrentHp + HeartOfGreedHealthBonus));
+            }
 
             // Set the runtime value after saved-run setup as well as preserving
             // the serialized value, so max HP gains survive the return.
@@ -104,7 +116,8 @@ internal static class CheckpointStore
                 // 强欲之心：不再愧疚——本次回归不加任何诅咒，预算清零并保持
                 // 0（顶栏显示“愧疚 0 受伤 0”，之后的死亡也不再增长）。
                 CurseBudget.ClearToZero("Heart of Greed recovery");
-                ModLog.Write("Heart of Greed recovery: no curse added; HP and max HP increased by 2.");
+                ModLog.Write($"Heart of Greed recovery: no curse added; HP and max HP increased by {HeartOfGreedHealthBonus}, " +
+                    $"max HP capped at {HeartOfGreedMaxHealthCap}.");
             }
             else
             {
@@ -120,7 +133,7 @@ internal static class CheckpointStore
                 advanceBudget = true;
                 ModLog.Write($"Recovery curses applied from the death budget: guilty x{guilties}, injury x{injuries}.");
             }
-            // 回归血量使用检查点保存的 CurrentHp（傲慢线已含 +1 加成）。
+            // 回归血量使用检查点保存的 CurrentHp（强欲之心的恢复增量已写入）。
             player.Creature.SetCurrentHpInternal(savedPlayer.CurrentHp);
             ModLog.Write($"Recovery health restored from checkpoint: {savedPlayer.CurrentHp}/{savedPlayer.MaxHp}.");
         }

@@ -311,7 +311,6 @@ internal static class AbandonRunVideo
 
     private static void StartRejectVideo()
     {
-        IfAchievements.Unlock("otto_reject");
         if (_video is null || !GodotObject.IsInstanceValid(_video))
         {
             ModLog.Write("Reject Otto video could not start because the video player is unavailable.");
