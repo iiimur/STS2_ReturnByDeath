@@ -1,0 +1,4 @@
+interface:
+  display_name: "STS2 Mod Builder"
+  short_description: "Create, test, and publish Slay the Spire 2 mods"
+  default_prompt: "Use $sts2-mod-builder to create, test, package, or publish a Slay the Spire 2 mod."
